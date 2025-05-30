@@ -1,60 +1,54 @@
-# backend/api_server.py
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse  # For custom exception handling if needed
+from fastapi.responses import JSONResponse
+from pathlib import Path
 
-# Attempt to import project-specific modules
 try:
-    from config import settings  # Global settings instance
-    from utils import setup_logger, AvaChatError, ConfigurationError, VectorStoreError, RAGPipelineError, LLMClientError
-
-    # API Handlers
+    from config import settings
+    from utils import setup_logger, AvaChatError, ConfigurationError, VectorStoreError, RAGPipelineError, \
+        LLMClientError, TextSplittingError, EmbeddingGenerationError, DocumentLoadingError
     from backend.api_handlers import router as api_handlers_router
-
-    # LLM Interface - Import both clients
-    from llm_interface.ollama_client import OllamaLLMClient
     from llm_interface.gemini_client import GeminiLLMClient
-
-    # RAG Components
     from rag.document_loader import DocumentLoader
-    from rag.text_splitter import RecursiveCharacterTextSplitter  # Using the full name here
+    from rag.text_splitter import RecursiveCharacterTextSplitter
     from rag.embedding_generator import EmbeddingGenerator
-    from rag.vector_store import FAISSVectorStore  # Concrete implementation
+    from rag.vector_store import FAISSVectorStore, VectorStoreInterface
     from rag.rag_pipeline import RAGPipeline
-
 except ImportError as e:
-    print(
-        f"CRITICAL Import Error in backend/api_server.py: {e}. Ensure all modules are correctly defined and accessible.")
+    print(f"CRITICAL Backend Import Error in api_server.py: {e}. Using dummy fallbacks.")
 
 
-    # Define dummy classes and objects to allow parsing for incremental dev,
-    # though the server won't be functional.
-    class Settings:
-        LOG_LEVEL = "INFO";
-        API_SERVER_HOST = "127.0.0.1";
+    class SettingsClass:
+        LOG_LEVEL = "DEBUG"
+        API_SERVER_HOST = "127.0.0.1"
         API_SERVER_PORT = 8000
-        LLM_PROVIDER = "ollama"
-        OLLAMA_API_URL = "http://localhost:11434"
-        GOOGLE_API_KEY = ""
-        EMBEDDING_DIMENSION = 768  # CRITICAL: Must match chosen embedding model
-        VECTOR_STORE_PATH = "./dummy_vector_store/faiss.index"
-        VECTOR_STORE_METADATA_PATH = "./dummy_vector_store/faiss_metadata.pkl"
-        # Add other settings if they are directly accessed in lifespan
+        LLM_PROVIDER = "gemini"
+        GOOGLE_API_KEY = "dummy_api_key_placeholder"
+        GEMINI_MODEL = "gemini-dummy-model"
+        EMBEDDING_DIMENSION = 384
+        VECTOR_STORE_PATH = Path("./dummy_vector_store/faiss.index")
+        VECTOR_STORE_METADATA_PATH = Path("./dummy_vector_store/faiss_metadata.pkl")
+        CHUNK_SIZE = 1000
+        CHUNK_OVERLAP = 200
+        OLLAMA_API_URL = ""
+        OLLAMA_CHAT_MODEL = ""
+        OLLAMA_EMBEDDING_MODEL = ""
 
 
-    settings = Settings()  # Instantiate dummy
+    settings = SettingsClass()
 
 
     def setup_logger(name, level):
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         l = logging.getLogger(name)
-        l.info(f"Dummy logger for {name} @ {level}")
+        l.info(f"Dummy logger for {name} @ {level} (Backend Fallback)")
         return l
 
 
     class AvaChatError(Exception):
         pass
+
 
     class ConfigurationError(AvaChatError):
         pass
@@ -62,6 +56,7 @@ except ImportError as e:
 
     class VectorStoreError(AvaChatError):
         pass
+
 
     class RAGPipelineError(AvaChatError):
         pass
@@ -71,18 +66,33 @@ except ImportError as e:
         pass
 
 
+    class TextSplittingError(AvaChatError):
+        pass
+
+
+    class EmbeddingGenerationError(AvaChatError):
+        pass
+
+
+    class DocumentLoadingError(AvaChatError):
+        pass
+
+
     class APIRouter:
-        def __init__(self): self.routes = []
-    api_handlers_router = APIRouter()  # Dummy router
+        routes = []
 
 
-    class OllamaLLMClient:
-        async def close_session(self):
-            pass
+    api_handlers_router = APIRouter()
+
 
     class GeminiLLMClient:
-        async def close_session(self):
-            pass
+        def __init__(self, settings):
+            self.settings = settings
+            print("BACKEND WARNING: Using DUMMY GeminiLLMClient")
+
+        async def close_session(self): pass
+
+        async def list_available_models(self): return [self.settings.GEMINI_MODEL]
 
 
     class DocumentLoader:
@@ -90,102 +100,87 @@ except ImportError as e:
 
 
     class RecursiveCharacterTextSplitter:
-        def __init__(self, chunk_size, chunk_overlap):
-            pass
+        def __init__(self, chunk_size, chunk_overlap): pass
 
 
     class EmbeddingGenerator:
-        pass
+        def __init__(self, llm_client): self.llm_client = llm_client
 
 
     class FAISSVectorStore:
-        def __init__(self, embedding_dimension, index_file_path, metadata_file_path):
-            pass
+        def __init__(self, embedding_dimension, index_file_path, metadata_file_path): self.index = None
 
-        def load(self):
-            pass
+        def load(self): pass
 
-        def save(self):
-            pass
+        def save(self): pass
+
+        def is_empty(self): return True
+
+
+    class VectorStoreInterface:
+        pass
 
 
     class RAGPipeline:
-        pass
+        def __init__(self, settings, llm_client, document_loader, text_splitter, embedding_generator,
+                     vector_store): pass
 
-# Setup a logger for the API server module itself
-# The root logger is configured by setup_logger called within the lifespan manager.
-# This logger instance is for api_server.py specific messages.
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Asynchronous context manager to handle application startup and shutdown logic.
-    Initializes and cleans up resources like LLM clients, RAG pipelines, Vector Stores.
-    """
-    # === Startup ===
-    # Configure root logger (and get one for this context)
-    # This should be one of the very first things.
     lifespan_logger = setup_logger("AvaChatServerLifespan", settings.LOG_LEVEL)
     lifespan_logger.info("AvaChat Server Lifespan: Startup sequence initiated.")
-    lifespan_logger.info(f"Log level set to: {settings.LOG_LEVEL}")
+    lifespan_logger.info(f"Log level configured to: {settings.LOG_LEVEL}")
 
-    # Initialize LLM Client based on provider
+    lifespan_logger.info("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    lifespan_logger.info(f"!!! HARDCODING GEMINI CLIENT INITIALIZATION !!!")
+    lifespan_logger.info(
+        f"!!! Original settings.LLM_PROVIDER = '{settings.LLM_PROVIDER}' (will be overridden for client choice)")
+    lifespan_logger.info(
+        f"!!! Using settings.GOOGLE_API_KEY set = {bool(settings.GOOGLE_API_KEY and settings.GOOGLE_API_KEY != 'your_gemini_api_key_here' and settings.GOOGLE_API_KEY != 'dummy_api_key_placeholder')}")
+    lifespan_logger.info(f"!!! Using settings.GEMINI_MODEL = '{settings.GEMINI_MODEL}'")
+    lifespan_logger.info("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+
     try:
-        if settings.LLM_PROVIDER == "gemini":
-            lifespan_logger.info(f"Initializing GeminiLLMClient...")
-            app.state.llm_client = GeminiLLMClient(settings=settings)
-            lifespan_logger.info("GeminiLLMClient initialized successfully.")
-        else:  # Default to Ollama
-            lifespan_logger.info(f"Initializing OllamaLLMClient for URL: {settings.OLLAMA_API_URL}...")
-            app.state.llm_client = OllamaLLMClient(settings=settings)
-            lifespan_logger.info("OllamaLLMClient initialized successfully.")
+        lifespan_logger.info(f"Force initializing GeminiLLMClient...")
+        if not settings.GOOGLE_API_KEY or settings.GOOGLE_API_KEY == 'your_gemini_api_key_here' or settings.GOOGLE_API_KEY == 'dummy_api_key_placeholder':
+            lifespan_logger.error(
+                "CRITICAL CONFIGURATION ERROR: GOOGLE_API_KEY is missing or a placeholder. Gemini WILL fail.")
+            raise ConfigurationError("GOOGLE_API_KEY not properly set for hardcoded Gemini provider.")
+
+        current_provider_before_force = settings.LLM_PROVIDER
+        settings.LLM_PROVIDER = "gemini"
+        lifespan_logger.info(
+            f"Settings.LLM_PROVIDER was '{current_provider_before_force}', now forced to '{settings.LLM_PROVIDER}' for client and RAG init.")
+
+        app.state.llm_client = GeminiLLMClient(settings=settings)
+        lifespan_logger.info(f"GeminiLLMClient FORCED. Type in app.state: {type(app.state.llm_client)}")
+
     except Exception as e:
-        lifespan_logger.critical(f"Failed to initialize LLM client: {e}", exc_info=True)
-        # Depending on severity, could raise an error to prevent server start
-        raise ConfigurationError(f"LLM client initialization failed: {e}") from e
+        lifespan_logger.critical(f"Failed to force initialize GeminiLLMClient: {e}", exc_info=True)
+        raise ConfigurationError(f"Hardcoded GeminiLLMClient initialization failed: {e}") from e
 
-    # Initialize RAG Components
     try:
-        lifespan_logger.info("Initializing RAG components...")
+        lifespan_logger.info("Initializing RAG components (with forced Gemini client)...")
         doc_loader = DocumentLoader()
-        # Ensure chunk_size and chunk_overlap are appropriate. These could also come from settings.
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=settings.CHUNK_SIZE,
+                                                       chunk_overlap=settings.CHUNK_OVERLAP)
         embedding_generator = EmbeddingGenerator(llm_client=app.state.llm_client)
 
-        # Use the correct embedding dimension based on provider
-        embedding_dimension = settings.EMBEDDING_DIMENSION  # This property handles both providers
-        lifespan_logger.info(f"Initializing FAISSVectorStore. Dimension: {embedding_dimension}")
-        lifespan_logger.info(f"FAISS Index Path: {settings.VECTOR_STORE_PATH}")
-        lifespan_logger.info(f"FAISS Metadata Path: {settings.VECTOR_STORE_METADATA_PATH}")
+        embedding_dimension = settings.EMBEDDING_DIMENSION
+        lifespan_logger.info(
+            f"RAG: Using EMBEDDING_DIMENSION: {embedding_dimension} (derived from LLM_PROVIDER='{settings.LLM_PROVIDER}')")
 
         vector_store = FAISSVectorStore(
-            embedding_dimension=embedding_dimension,  # CRITICAL: Must match embedding model
+            embedding_dimension=embedding_dimension,
             index_file_path=settings.VECTOR_STORE_PATH,
             metadata_file_path=settings.VECTOR_STORE_METADATA_PATH
         )
+        vector_store.load()
+        app.state.vector_store = vector_store
 
-        lifespan_logger.info("Attempting to load existing vector store...")
-        try:
-            vector_store.load()  # Attempt to load existing index
-            if vector_store.is_empty():
-                lifespan_logger.info("Vector store loaded but is empty (or new).")
-            else:
-                lifespan_logger.info(
-                    f"Successfully loaded vector store with {getattr(vector_store.index, 'ntotal', 0)} items.")
-        except FileNotFoundError:
-            lifespan_logger.info("Vector store files not found. A new store will be created on first save.")
-        except VectorStoreError as vse:  # Catch specific errors from vector_store.load()
-            lifespan_logger.warning(
-                f"VectorStoreError during load: {vse}. Proceeding with potentially empty/new store.", exc_info=True)
-        except Exception as e:  # Catch any other unexpected error during load
-            lifespan_logger.error(f"Unexpected error loading vector store: {e}. Proceeding with empty/new store.",
-                                  exc_info=True)
-
-        app.state.vector_store = vector_store  # Make vector_store available for shutdown save
-
-        lifespan_logger.info("Initializing RAGPipeline...")
         app.state.rag_pipeline = RAGPipeline(
             settings=settings,
             llm_client=app.state.llm_client,
@@ -194,109 +189,75 @@ async def lifespan(app: FastAPI):
             embedding_generator=embedding_generator,
             vector_store=app.state.vector_store
         )
-        lifespan_logger.info("RAGPipeline and all components initialized successfully.")
-
-    except ConfigurationError as e:  # Catch config errors from component init
-        lifespan_logger.critical(f"Configuration error during RAG component initialization: {e}", exc_info=True)
-        raise  # Re-raise to stop server if essential config is missing
+        lifespan_logger.info("RAGPipeline and components initialized with forced Gemini setup.")
     except Exception as e:
         lifespan_logger.critical(f"Failed to initialize RAG components: {e}", exc_info=True)
-        raise RAGPipelineError(f"RAG component initialization failed: {e}") from e  # Or a more generic server error
+        raise RAGPipelineError(f"RAG component initialization failed: {e}") from e
 
     lifespan_logger.info("AvaChat Server Lifespan: Startup sequence complete. Application ready.")
     yield
-    # === Shutdown ===
     lifespan_logger.info("AvaChat Server Lifespan: Shutdown sequence initiated.")
-
-    # Save Vector Store
     if hasattr(app.state, 'vector_store') and app.state.vector_store:
         try:
-            lifespan_logger.info("Saving FAISSVectorStore...")
             app.state.vector_store.save()
-            lifespan_logger.info("FAISSVectorStore saved successfully.")
+            lifespan_logger.info("FAISSVectorStore saved.")
         except Exception as e:
-            lifespan_logger.error(f"Failed to save FAISSVectorStore during shutdown: {e}", exc_info=True)
-    else:
-        lifespan_logger.warning("Vector store not found in app.state during shutdown. Nothing to save.")
-
-    # Close LLM Client Session
+            lifespan_logger.error(f"Failed to save FAISSVectorStore: {e}", exc_info=True)
     if hasattr(app.state, 'llm_client') and app.state.llm_client:
         try:
-            lifespan_logger.info("Closing LLM client session...")
             await app.state.llm_client.close_session()
-            lifespan_logger.info("LLM client session closed successfully.")
+            lifespan_logger.info("LLM client session closed.")
         except Exception as e:
-            lifespan_logger.error(f"Failed to close LLM client session during shutdown: {e}", exc_info=True)
-    else:
-        lifespan_logger.warning("LLM client not found in app.state during shutdown.")
-
+            lifespan_logger.error(f"Failed to close LLM client session: {e}", exc_info=True)
     lifespan_logger.info("AvaChat Server Lifespan: Shutdown sequence complete.")
 
 
-# Initialize FastAPI Application with the lifespan context manager
 app = FastAPI(
     title="AvaChat Backend API",
-    description="API server for AvaChat, handling RAG operations and LLM interactions.",
+    description="API server for AvaChat, handling RAG operations and LLM interactions. HARDCODED FOR GEMINI.",
     version="0.1.0",
     lifespan=lifespan
 )
-
-# Include API routers
 app.include_router(api_handlers_router, prefix="/api")
-logger.info("API router included with prefix /api.")
+logger.info("FastAPI app created and API router included under /api prefix.")
 
 
-# Optional: Define a custom global exception handler for AvaChatError or others
-# This can be useful to ensure all errors are returned in a consistent format
-# if HTTPErrors from handlers aren't sufficient.
 @app.exception_handler(AvaChatError)
 async def avachat_exception_handler(request: Request, exc: AvaChatError):
-    logger.error(f"Unhandled AvaChatError at API level: {exc}", exc_info=True)
-    # Default error code and message if not more specific from the exception
+    logging.getLogger("AvaChatServerLifespan").error(f"Unhandled AvaChatError at API level: {exc}", exc_info=True)
     error_code = "AVACHAT_ERROR"
     error_message = str(exc)
-    status_code = 500  # Internal Server Error by default
-
+    status_code = 500
     if isinstance(exc, ConfigurationError):
         error_code = "CONFIGURATION_ERROR"
-        status_code = 503  # Service Unavailable
+        status_code = 503
     elif isinstance(exc, VectorStoreError):
         error_code = "VECTOR_STORE_ERROR"
     elif isinstance(exc, LLMClientError):
         error_code = "LLM_CLIENT_ERROR"
-        status_code = 502  # Bad Gateway
-    # Add more specific error mapping here if needed
-
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "error": {  # Matches ApiErrorResponse structure
-                "code": error_code,
-                "message": error_message
-            }
-        }
-    )
+        status_code = 502
+    return JSONResponse(status_code=status_code, content={"error": {"code": error_code, "message": error_message}})
 
 
 @app.get("/", include_in_schema=False)
 async def root():
-    logger.info("Root path '/' accessed.")
-    return {"message": "Welcome to the AvaChat API! Documentation available at /docs or /redoc."}
+    logging.getLogger(__name__).info("Root path '/' accessed.")
+    return {"message": "Welcome to the AvaChat API! This version is HARDCODED FOR GEMINI. Docs at /docs or /redoc."}
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    # This block allows running the server directly using `python backend/api_server.py`
-    # The logger here is the module-level logger defined at the top of this file.
-    logger.info("Attempting to start Uvicorn server for AvaChat API...")
+    print(
+        f"Attempting to start Uvicorn server for AvaChat API (Host: {settings.API_SERVER_HOST}, Port: {settings.API_SERVER_PORT})...")
+    print(f"   >>> Main Block Check: settings.LLM_PROVIDER = {settings.LLM_PROVIDER}")
+    print(
+        f"   >>> Main Block Check: settings.GOOGLE_API_KEY set = {bool(settings.GOOGLE_API_KEY and settings.GOOGLE_API_KEY != 'your_gemini_api_key_here' and settings.GOOGLE_API_KEY != 'dummy_api_key_placeholder')}")
     uvicorn.run(
-        "backend.api_server:app",  # Path to the FastAPI app instance
+        "backend.api_server:app",
         host=settings.API_SERVER_HOST,
         port=settings.API_SERVER_PORT,
-        reload=True,  # Enable auto-reload for development (True might be problematic if not run with watchfiles)
-        # Consider `reload_dirs` if you want to specify directories to watch.
-        # Often set to False for production or when using external process managers.
-        log_level=settings.LOG_LEVEL.lower()  # Uvicorn's log level
+        reload=False,
+        log_level=settings.LOG_LEVEL.lower()
     )
-    logger.info("Uvicorn server has been started (or an attempt was made).")
+    print("Uvicorn server has been started (or an attempt was made).")
