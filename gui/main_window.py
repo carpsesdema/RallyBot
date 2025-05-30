@@ -336,47 +336,21 @@ class MainWindow(QMainWindow):
     def check_backend_status_via_api(self):
         """Checks if the backend root endpoint is responsive."""
         if self.backend_manager and self.backend_manager.is_running:
-            if not self.api_client:  # Ensure ApiClient is initialized
-                self.api_client = ApiClient(settings_obj=settings)
+            # Instead of trying to run async code here, just setup the worker and emit signal
+            if not self.chat_worker or not self.chat_thread.isRunning():
+                self.setup_chat_worker()
 
-            # Use a separate thread for this blocking network call to avoid freezing GUI
-            # Or better, make ApiClient have a synchronous check method or use QNetworkAccessManager
-            # For simplicity here, we'll assume a quick check.
-            # A robust solution would use a non-blocking check or a dedicated thread for health checks.
-            async def check():
-                try:
-                    # This is an async call, so it needs to be run in an event loop.
-                    # The ChatWorker's loop can be reused if it's designed for general tasks.
-                    # For a simple health check, a quick sync request might be easier if httpx supports it,
-                    # or use 'requests' library for a sync check.
-                    # Let's use the chat worker to perform this check.
-                    # For now, we'll directly proceed to setup chat worker and fetch models,
-                    # assuming if backend_manager.is_running, the API will be up soon.
-                    # This is a simplification.
+            # Backend is running, assume API is ready
+            self.backend_status_label.setText("Backend: Running ✅")
+            self.send_button.setEnabled(True)
+            self.ingest_button.setEnabled(True)
+            self.model_selector.setEnabled(True)
 
-                    # If backend manager says it's running, assume API is ready for now
-                    self.backend_status_label.setText("Backend: Running ✅")
-                    self.send_button.setEnabled(True)
-                    self.ingest_button.setEnabled(True)
-                    self.model_selector.setEnabled(True)  # Enable selector
-                    if not self.chat_worker or not self.chat_thread.isRunning():  # Setup if not already
-                        self.setup_chat_worker()
+            self.add_system_message("Backend confirmed. Fetching available models...")
 
-                    self.add_system_message("Backend confirmed. Fetching available models...")
-                    self.request_available_models_signal.emit()  # Fetch models
-                    self.status_timer.stop()  # Stop timer once confirmed
-
-                except Exception as e:  # Catch if API client init fails or other issues
-                    self.add_system_message(f"Backend API not yet responsive: {e}")
-                    # Keep timer running to re-check
-
-            # To run the async check function:
-            if not self.chat_worker: self.setup_chat_worker()  # Ensure worker is there to run async tasks
-            loop = self.chat_worker._ensure_event_loop()
-            if loop and not loop.is_closed():
-                asyncio.ensure_future(check(), loop=loop)
-            else:
-                self.add_system_message("Cannot check backend: Event loop issue.")
+            # Emit signal to fetch models via the worker
+            self.request_available_models_signal.emit()
+            self.status_timer.stop()  # Stop timer once confirmed
         else:
             # Backend process is not running according to manager
             self.on_backend_status_changed(False)
