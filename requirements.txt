@@ -1,5 +1,5 @@
 # requirements.txt
-
+google-generativeai
 # Core Frameworks
 fastapi
 uvicorn[standard]
