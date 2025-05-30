@@ -65,6 +65,7 @@ except ImportError as e:
     class ApiClientError(Exception):  # Dummy exception
         def __init__(self, message, status_code=None, error_response=None):
             super().__init__(message)
+            self.message = message
             self.status_code = status_code
             self.error_response = error_response
 
@@ -108,8 +109,8 @@ class ApiClient:
                         logger.error(
                             f"Failed to parse successful response for {endpoint} into {expected_response_model.__name__}: {e}. Response JSON: {response.json()}")
                         raise ApiClientError(
-                            message=f"Failed to parse successful response: {e}",
-                            status_code=response.status_code
+                            f"Failed to parse successful response: {e}",
+                            response.status_code
                         )
                 return response.json()  # Or return raw JSON if no model
             else:  # Error response
@@ -125,16 +126,16 @@ class ApiClient:
                     error_message = response.text or f"HTTP Error {response.status_code}"
                 logger.warning(f"API error from {endpoint} (Status {response.status_code}): {error_message}")
                 raise ApiClientError(
-                    message=error_message,
-                    status_code=response.status_code,
-                    error_response=error_response_parsed
+                    error_message,
+                    response.status_code,
+                    error_response_parsed
                 )
         except httpx.HTTPStatusError as e:  # Should be caught by status code check above, but good to have
             logger.error(f"HTTPStatusError for {method} {endpoint}: {e.response.status_code} - {e.response.text}",
                          exc_info=True)
             raise ApiClientError(
-                message=f"Server returned error: {e.response.status_code}",
-                status_code=e.response.status_code
+                f"Server returned error: {e.response.status_code}",
+                e.response.status_code
             ) from e
         except httpx.RequestError as e:  # Covers connection errors, timeouts etc.
             logger.error(f"RequestError for {method} {endpoint}: {e}", exc_info=True)
