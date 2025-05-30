@@ -12,8 +12,9 @@ try:
     # API Handlers
     from backend.api_handlers import router as api_handlers_router
 
-    # LLM Interface
+    # LLM Interface - Import both clients
     from llm_interface.ollama_client import OllamaLLMClient
+    from llm_interface.gemini_client import GeminiLLMClient
 
     # RAG Components
     from rag.document_loader import DocumentLoader
@@ -33,7 +34,10 @@ except ImportError as e:
         LOG_LEVEL = "INFO";
         API_SERVER_HOST = "127.0.0.1";
         API_SERVER_PORT = 8000
-        OLLAMA_EMBEDDING_DIMENSION = 768  # CRITICAL: Must match chosen embedding model
+        LLM_PROVIDER = "ollama"
+        OLLAMA_API_URL = "http://localhost:11434"
+        GOOGLE_API_KEY = ""
+        EMBEDDING_DIMENSION = 768  # CRITICAL: Must match chosen embedding model
         VECTOR_STORE_PATH = "./dummy_vector_store/faiss.index"
         VECTOR_STORE_METADATA_PATH = "./dummy_vector_store/faiss_metadata.pkl"
         # Add other settings if they are directly accessed in lifespan
@@ -73,6 +77,10 @@ except ImportError as e:
 
 
     class OllamaLLMClient:
+        async def close_session(self):
+            pass
+
+    class GeminiLLMClient:
         async def close_session(self):
             pass
 
@@ -123,15 +131,20 @@ async def lifespan(app: FastAPI):
     lifespan_logger.info("AvaChat Server Lifespan: Startup sequence initiated.")
     lifespan_logger.info(f"Log level set to: {settings.LOG_LEVEL}")
 
-    # Initialize LLM Client
+    # Initialize LLM Client based on provider
     try:
-        lifespan_logger.info(f"Initializing OllamaLLMClient for URL: {settings.OLLAMA_API_URL}...")
-        app.state.llm_client = OllamaLLMClient(settings=settings)
-        lifespan_logger.info("OllamaLLMClient initialized successfully.")
+        if settings.LLM_PROVIDER == "gemini":
+            lifespan_logger.info(f"Initializing GeminiLLMClient...")
+            app.state.llm_client = GeminiLLMClient(settings=settings)
+            lifespan_logger.info("GeminiLLMClient initialized successfully.")
+        else:  # Default to Ollama
+            lifespan_logger.info(f"Initializing OllamaLLMClient for URL: {settings.OLLAMA_API_URL}...")
+            app.state.llm_client = OllamaLLMClient(settings=settings)
+            lifespan_logger.info("OllamaLLMClient initialized successfully.")
     except Exception as e:
-        lifespan_logger.critical(f"Failed to initialize OllamaLLMClient: {e}", exc_info=True)
+        lifespan_logger.critical(f"Failed to initialize LLM client: {e}", exc_info=True)
         # Depending on severity, could raise an error to prevent server start
-        raise ConfigurationError(f"OllamaLLMClient initialization failed: {e}") from e
+        raise ConfigurationError(f"LLM client initialization failed: {e}") from e
 
     # Initialize RAG Components
     try:
@@ -141,12 +154,14 @@ async def lifespan(app: FastAPI):
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         embedding_generator = EmbeddingGenerator(llm_client=app.state.llm_client)
 
-        lifespan_logger.info(f"Initializing FAISSVectorStore. Dimension: {settings.OLLAMA_EMBEDDING_DIMENSION}")
+        # Use the correct embedding dimension based on provider
+        embedding_dimension = settings.EMBEDDING_DIMENSION  # This property handles both providers
+        lifespan_logger.info(f"Initializing FAISSVectorStore. Dimension: {embedding_dimension}")
         lifespan_logger.info(f"FAISS Index Path: {settings.VECTOR_STORE_PATH}")
         lifespan_logger.info(f"FAISS Metadata Path: {settings.VECTOR_STORE_METADATA_PATH}")
 
         vector_store = FAISSVectorStore(
-            embedding_dimension=settings.OLLAMA_EMBEDDING_DIMENSION,  # CRITICAL: Must match embedding model
+            embedding_dimension=embedding_dimension,  # CRITICAL: Must match embedding model
             index_file_path=settings.VECTOR_STORE_PATH,
             metadata_file_path=settings.VECTOR_STORE_METADATA_PATH
         )
@@ -207,11 +222,11 @@ async def lifespan(app: FastAPI):
     # Close LLM Client Session
     if hasattr(app.state, 'llm_client') and app.state.llm_client:
         try:
-            lifespan_logger.info("Closing OllamaLLMClient session...")
+            lifespan_logger.info("Closing LLM client session...")
             await app.state.llm_client.close_session()
-            lifespan_logger.info("OllamaLLMClient session closed successfully.")
+            lifespan_logger.info("LLM client session closed successfully.")
         except Exception as e:
-            lifespan_logger.error(f"Failed to close OllamaLLMClient session during shutdown: {e}", exc_info=True)
+            lifespan_logger.error(f"Failed to close LLM client session during shutdown: {e}", exc_info=True)
     else:
         lifespan_logger.warning("LLM client not found in app.state during shutdown.")
 

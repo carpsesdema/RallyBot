@@ -1,208 +1,302 @@
-# backend/api_handlers.py
+# backend/api_server.py
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from typing import List, Optional # Added Optional for type hinting
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse  # For custom exception handling if needed
 
 # Attempt to import project-specific modules
 try:
-    from models import (
-        QueryRequest, QueryResponse,
-        IngestDirectoryRequest, IngestDirectoryResponse,
-        AvailableModelsResponse, # Added new response model
-        ApiErrorResponse, ApiErrorDetail
-    )
-    # RAGPipeline and OllamaLLMClient types for dependency injection hints
+    from config import settings  # Global settings instance
+    from utils import setup_logger, AvaChatError, ConfigurationError, VectorStoreError, RAGPipelineError, LLMClientError
+
+    # API Handlers
+    from backend.api_handlers import router as api_handlers_router
+
+    # LLM Interface - Import both clients
+    from llm_interface.ollama_client import OllamaLLMClient
+    from llm_interface.gemini_client import GeminiLLMClient
+
+    # RAG Components
+    from rag.document_loader import DocumentLoader
+    from rag.text_splitter import RecursiveCharacterTextSplitter  # Using the full name here
+    from rag.embedding_generator import EmbeddingGenerator
+    from rag.vector_store import FAISSVectorStore  # Concrete implementation
     from rag.rag_pipeline import RAGPipeline
-    from llm_interface.ollama_client import OllamaLLMClient # Ensure this is the correct client
-    from utils import RAGPipelineError, DocumentLoadingError, LLMClientError, ConfigurationError
+
 except ImportError as e:
-    print(f"Import Error in backend/api_handlers.py: {e}. Ensure models.py, rag_pipeline.py, etc., are correct.")
+    print(
+        f"CRITICAL Import Error in backend/api_server.py: {e}. Ensure all modules are correctly defined and accessible.")
 
-    # Define dummy classes if imports fail for standalone parsing/early dev
-    class PydanticBaseModel:
-        def model_dump(self, **kwargs): return {}
-        @classmethod
-        def model_validate(cls, data, **kwargs): return cls()
 
-    class QueryRequest(PydanticBaseModel):
-        query_text: str = ""
-        top_k_chunks: int = 3
-        model_name: Optional[str] = None
-    class QueryResponse(PydanticBaseModel): answer: str = ""; retrieved_chunks_details: list = []
-    class IngestDirectoryRequest(PydanticBaseModel): directory_path: str = ""
-    class IngestDirectoryResponse(PydanticBaseModel): status: str = ""; documents_processed: int = 0; chunks_created: int = 0
-    class AvailableModelsResponse(PydanticBaseModel): models: List[str] = [] # Added dummy
-    class ApiErrorDetail(PydanticBaseModel): code: str = ""; message: str = ""
-    class ApiErrorResponse(PydanticBaseModel): error: ApiErrorDetail = ApiErrorDetail()
-    class RAGPipeline: pass
+    # Define dummy classes and objects to allow parsing for incremental dev,
+    # though the server won't be functional.
+    class Settings:
+        LOG_LEVEL = "INFO";
+        API_SERVER_HOST = "127.0.0.1";
+        API_SERVER_PORT = 8000
+        LLM_PROVIDER = "ollama"
+        OLLAMA_API_URL = "http://localhost:11434"
+        GOOGLE_API_KEY = ""
+        EMBEDDING_DIMENSION = 768  # CRITICAL: Must match chosen embedding model
+        VECTOR_STORE_PATH = "./dummy_vector_store/faiss.index"
+        VECTOR_STORE_METADATA_PATH = "./dummy_vector_store/faiss_metadata.pkl"
+        # Add other settings if they are directly accessed in lifespan
+
+
+    settings = Settings()  # Instantiate dummy
+
+
+    def setup_logger(name, level):
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        l = logging.getLogger(name)
+        l.info(f"Dummy logger for {name} @ {level}")
+        return l
+
+
+    class AvaChatError(Exception):
+        pass
+
+    class ConfigurationError(AvaChatError):
+        pass
+
+
+    class VectorStoreError(AvaChatError):
+        pass
+
+    class RAGPipelineError(AvaChatError):
+        pass
+
+
+    class LLMClientError(AvaChatError):
+        pass
+
+
+    class APIRouter:
+        def __init__(self): self.routes = []
+    api_handlers_router = APIRouter()  # Dummy router
+
+
     class OllamaLLMClient:
-        async def list_available_models(self) -> List[str]: return ["dummy_model:latest"] # Dummy method
-    class RAGPipelineError(Exception): pass
-    class DocumentLoadingError(Exception): pass
-    class LLMClientError(Exception): pass
-    class ConfigurationError(Exception): pass
+        async def close_session(self):
+            pass
 
+    class GeminiLLMClient:
+        async def close_session(self):
+            pass
+
+
+    class DocumentLoader:
+        pass
+
+
+    class RecursiveCharacterTextSplitter:
+        def __init__(self, chunk_size, chunk_overlap):
+            pass
+
+
+    class EmbeddingGenerator:
+        pass
+
+
+    class FAISSVectorStore:
+        def __init__(self, embedding_dimension, index_file_path, metadata_file_path):
+            pass
+
+        def load(self):
+            pass
+
+        def save(self):
+            pass
+
+
+    class RAGPipeline:
+        pass
+
+# Setup a logger for the API server module itself
+# The root logger is configured by setup_logger called within the lifespan manager.
+# This logger instance is for api_server.py specific messages.
 logger = logging.getLogger(__name__)
-router = APIRouter()
 
-# --- Dependency Injection Functions ---
 
-def get_rag_pipeline(request: Request) -> RAGPipeline:
-    """Dependency to get the RAGPipeline instance from app state."""
-    if not hasattr(request.app.state, 'rag_pipeline') or request.app.state.rag_pipeline is None:
-        logger.error("RAGPipeline not found in application state. FastAPI server setup might be incomplete.")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="RAG service is not initialized or available."
-        )
-    return request.app.state.rag_pipeline
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Asynchronous context manager to handle application startup and shutdown logic.
+    Initializes and cleans up resources like LLM clients, RAG pipelines, Vector Stores.
+    """
+    # === Startup ===
+    # Configure root logger (and get one for this context)
+    # This should be one of the very first things.
+    lifespan_logger = setup_logger("AvaChatServerLifespan", settings.LOG_LEVEL)
+    lifespan_logger.info("AvaChat Server Lifespan: Startup sequence initiated.")
+    lifespan_logger.info(f"Log level set to: {settings.LOG_LEVEL}")
 
-def get_llm_client(request: Request) -> OllamaLLMClient: # Assuming OllamaLLMClient for now
-    """Dependency to get the LLMClient instance from app state."""
-    # This needs to be robust if you support multiple LLM clients (Ollama, Gemini)
-    # For now, let's assume app.state.llm_client is the primary one (e.g. Ollama)
-    # or the one capable of listing its own models.
-    # If you want to list models from a specific provider, you might need separate dependencies
-    # or a way to specify the provider.
-    if not hasattr(request.app.state, 'llm_client') or request.app.state.llm_client is None:
-        logger.error("LLMClient not found in application state. FastAPI server setup might be incomplete.")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="LLM client service is not initialized or available."
-        )
-    # Ensure the client has the 'list_available_models' method if it's specific
-    if not hasattr(request.app.state.llm_client, 'list_available_models'):
-        logger.error("LLMClient in application state does not support listing models.")
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED, # Or 503 if it should be there
-            detail="The configured LLM client cannot list available models."
-        )
-    return request.app.state.llm_client
-
-# --- API Endpoints ---
-
-@router.get(
-    "/models",
-    response_model=AvailableModelsResponse,
-    responses={
-        status.HTTP_500_INTERNAL_SERVER_ERROR: {"model": ApiErrorResponse},
-        status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ApiErrorResponse}
-    },
-    summary="List available LLM models",
-    description="Fetches a list of available LLM model names from the configured provider (e.g., Ollama)."
-)
-async def list_available_llm_models(
-    llm_client: OllamaLLMClient = Depends(get_llm_client) # Specify OllamaLLMClient for clarity if that's what get_llm_client returns
-):
-    logger.info("Request received for /models endpoint.")
+    # Initialize LLM Client based on provider
     try:
-        # The llm_client (OllamaLLMClient) should have the list_available_models method
-        model_names = await llm_client.list_available_models()
-        logger.info(f"Successfully fetched {len(model_names)} models.")
-        return AvailableModelsResponse(models=model_names)
-    except LLMClientError as e:
-        logger.error(f"LLMClientError when fetching models: {e}", exc_info=True)
-        error_detail = ApiErrorDetail(code="LLM_SERVICE_ERROR", message=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, # LLM service is often external
-            detail=error_detail.model_dump()
-        )
+        if settings.LLM_PROVIDER == "gemini":
+            lifespan_logger.info(f"Initializing GeminiLLMClient...")
+            app.state.llm_client = GeminiLLMClient(settings=settings)
+            lifespan_logger.info("GeminiLLMClient initialized successfully.")
+        else:  # Default to Ollama
+            lifespan_logger.info(f"Initializing OllamaLLMClient for URL: {settings.OLLAMA_API_URL}...")
+            app.state.llm_client = OllamaLLMClient(settings=settings)
+            lifespan_logger.info("OllamaLLMClient initialized successfully.")
     except Exception as e:
-        logger.critical(f"Unexpected error in /models endpoint: {e}", exc_info=True)
-        error_detail = ApiErrorDetail(code="UNEXPECTED_SERVER_ERROR", message="An unexpected error occurred while fetching models.")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=error_detail.model_dump()
+        lifespan_logger.critical(f"Failed to initialize LLM client: {e}", exc_info=True)
+        # Depending on severity, could raise an error to prevent server start
+        raise ConfigurationError(f"LLM client initialization failed: {e}") from e
+
+    # Initialize RAG Components
+    try:
+        lifespan_logger.info("Initializing RAG components...")
+        doc_loader = DocumentLoader()
+        # Ensure chunk_size and chunk_overlap are appropriate. These could also come from settings.
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        embedding_generator = EmbeddingGenerator(llm_client=app.state.llm_client)
+
+        # Use the correct embedding dimension based on provider
+        embedding_dimension = settings.EMBEDDING_DIMENSION  # This property handles both providers
+        lifespan_logger.info(f"Initializing FAISSVectorStore. Dimension: {embedding_dimension}")
+        lifespan_logger.info(f"FAISS Index Path: {settings.VECTOR_STORE_PATH}")
+        lifespan_logger.info(f"FAISS Metadata Path: {settings.VECTOR_STORE_METADATA_PATH}")
+
+        vector_store = FAISSVectorStore(
+            embedding_dimension=embedding_dimension,  # CRITICAL: Must match embedding model
+            index_file_path=settings.VECTOR_STORE_PATH,
+            metadata_file_path=settings.VECTOR_STORE_METADATA_PATH
         )
 
-@router.post(
-    "/chat",
-    response_model=QueryResponse,
-    responses={
-        status.HTTP_500_INTERNAL_SERVER_ERROR: {"model": ApiErrorResponse},
-        status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ApiErrorResponse},
-        status.HTTP_400_BAD_REQUEST: {"model": ApiErrorResponse}
-    },
-    summary="Process a chat query using RAG",
-    description="Receives a user query, retrieves relevant context using RAG, and generates a response from the LLM."
-)
-async def handle_chat_query(
-        payload: QueryRequest,
-        rag_pipeline: RAGPipeline = Depends(get_rag_pipeline)
-):
-    logger.info(f"Received chat query: '{payload.query_text[:50]}...', top_k: {payload.top_k_chunks}, model: {payload.model_name}")
-    try:
-        answer, sources = await rag_pipeline.query_with_rag(
-            query_text=payload.query_text,
-            top_k_chunks=payload.top_k_chunks,
-            model_name_override=payload.model_name # Pass the model name to the RAG pipeline
-        )
-        logger.info(f"Successfully generated chat response. Answer length: {len(answer)}, Sources found: {len(sources)}")
-        return QueryResponse(answer=answer, retrieved_chunks_details=sources)
-    except RAGPipelineError as e:
-        logger.error(f"RAGPipelineError during chat query: {e}", exc_info=True)
-        error_detail = ApiErrorDetail(code="RAG_PROCESSING_ERROR", message=str(e))
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_detail.model_dump())
-    except LLMClientError as e:
-        logger.error(f"LLMClientError during chat query: {e}", exc_info=True)
-        error_detail = ApiErrorDetail(code="LLM_CLIENT_ERROR", message=str(e))
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=error_detail.model_dump())
-    except Exception as e:
-        logger.critical(f"Unexpected error in /chat endpoint: {e}", exc_info=True)
-        error_detail = ApiErrorDetail(code="UNEXPECTED_SERVER_ERROR", message="An unexpected error occurred.")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_detail.model_dump())
+        lifespan_logger.info("Attempting to load existing vector store...")
+        try:
+            vector_store.load()  # Attempt to load existing index
+            if vector_store.is_empty():
+                lifespan_logger.info("Vector store loaded but is empty (or new).")
+            else:
+                lifespan_logger.info(
+                    f"Successfully loaded vector store with {getattr(vector_store.index, 'ntotal', 0)} items.")
+        except FileNotFoundError:
+            lifespan_logger.info("Vector store files not found. A new store will be created on first save.")
+        except VectorStoreError as vse:  # Catch specific errors from vector_store.load()
+            lifespan_logger.warning(
+                f"VectorStoreError during load: {vse}. Proceeding with potentially empty/new store.", exc_info=True)
+        except Exception as e:  # Catch any other unexpected error during load
+            lifespan_logger.error(f"Unexpected error loading vector store: {e}. Proceeding with empty/new store.",
+                                  exc_info=True)
 
-@router.post(
-    "/ingest",
-    response_model=IngestDirectoryResponse,
-    responses={
-        status.HTTP_500_INTERNAL_SERVER_ERROR: {"model": ApiErrorResponse},
-        status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ApiErrorResponse},
-        status.HTTP_400_BAD_REQUEST: {"model": ApiErrorResponse},
-        status.HTTP_404_NOT_FOUND: {"model": ApiErrorResponse}
-    },
-    summary="Ingest documents from a directory",
-    description="Triggers the RAG pipeline to load, process, and store documents from the specified server-side directory path."
-)
-async def handle_ingest_directory(
-        payload: IngestDirectoryRequest,
-        rag_pipeline: RAGPipeline = Depends(get_rag_pipeline)
-):
-    logger.info(f"Received request to ingest documents from directory: {payload.directory_path}")
-    try:
-        num_docs, num_chunks = await rag_pipeline.ingest_documents_from_directory(
-            directory_path_str=payload.directory_path # Ensure RAG pipeline expects directory_path_str
+        app.state.vector_store = vector_store  # Make vector_store available for shutdown save
+
+        lifespan_logger.info("Initializing RAGPipeline...")
+        app.state.rag_pipeline = RAGPipeline(
+            settings=settings,
+            llm_client=app.state.llm_client,
+            document_loader=doc_loader,
+            text_splitter=text_splitter,
+            embedding_generator=embedding_generator,
+            vector_store=app.state.vector_store
         )
-        logger.info(f"Successfully ingested documents. Processed: {num_docs} docs, Created: {num_chunks} chunks.")
-        return IngestDirectoryResponse(status="success", documents_processed=num_docs, chunks_created=num_chunks)
-    except DocumentLoadingError as e:
-        logger.error(f"DocumentLoadingError during ingestion for path '{payload.directory_path}': {e}", exc_info=True)
-        error_code = "DOCUMENT_PATH_INVALID" if "not found" in str(e).lower() or "is not a directory" in str(e).lower() else "DOCUMENT_LOADING_FAILED"
-        error_detail = ApiErrorDetail(code=error_code, message=str(e))
-        http_status = status.HTTP_404_NOT_FOUND if error_code == "DOCUMENT_PATH_INVALID" else status.HTTP_400_BAD_REQUEST
-        raise HTTPException(status_code=http_status, detail=error_detail.model_dump())
-    except RAGPipelineError as e:
-        logger.error(f"RAGPipelineError during ingestion for path '{payload.directory_path}': {e}", exc_info=True)
-        error_detail = ApiErrorDetail(code="INGESTION_PROCESSING_ERROR", message=str(e))
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_detail.model_dump())
-    except ConfigurationError as e:
-        logger.error(f"ConfigurationError affecting ingestion: {e}", exc_info=True)
-        error_detail = ApiErrorDetail(code="SERVER_CONFIGURATION_ERROR", message=str(e))
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=error_detail.model_dump())
+        lifespan_logger.info("RAGPipeline and all components initialized successfully.")
+
+    except ConfigurationError as e:  # Catch config errors from component init
+        lifespan_logger.critical(f"Configuration error during RAG component initialization: {e}", exc_info=True)
+        raise  # Re-raise to stop server if essential config is missing
     except Exception as e:
-        logger.critical(f"Unexpected error in /ingest endpoint for path '{payload.directory_path}': {e}", exc_info=True)
-        error_detail = ApiErrorDetail(code="UNEXPECTED_SERVER_ERROR", message="An unexpected error occurred during document ingestion.")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_detail.model_dump())
+        lifespan_logger.critical(f"Failed to initialize RAG components: {e}", exc_info=True)
+        raise RAGPipelineError(f"RAG component initialization failed: {e}") from e  # Or a more generic server error
+
+    lifespan_logger.info("AvaChat Server Lifespan: Startup sequence complete. Application ready.")
+    yield
+    # === Shutdown ===
+    lifespan_logger.info("AvaChat Server Lifespan: Shutdown sequence initiated.")
+
+    # Save Vector Store
+    if hasattr(app.state, 'vector_store') and app.state.vector_store:
+        try:
+            lifespan_logger.info("Saving FAISSVectorStore...")
+            app.state.vector_store.save()
+            lifespan_logger.info("FAISSVectorStore saved successfully.")
+        except Exception as e:
+            lifespan_logger.error(f"Failed to save FAISSVectorStore during shutdown: {e}", exc_info=True)
+    else:
+        lifespan_logger.warning("Vector store not found in app.state during shutdown. Nothing to save.")
+
+    # Close LLM Client Session
+    if hasattr(app.state, 'llm_client') and app.state.llm_client:
+        try:
+            lifespan_logger.info("Closing LLM client session...")
+            await app.state.llm_client.close_session()
+            lifespan_logger.info("LLM client session closed successfully.")
+        except Exception as e:
+            lifespan_logger.error(f"Failed to close LLM client session during shutdown: {e}", exc_info=True)
+    else:
+        lifespan_logger.warning("LLM client not found in app.state during shutdown.")
+
+    lifespan_logger.info("AvaChat Server Lifespan: Shutdown sequence complete.")
+
+
+# Initialize FastAPI Application with the lifespan context manager
+app = FastAPI(
+    title="AvaChat Backend API",
+    description="API server for AvaChat, handling RAG operations and LLM interactions.",
+    version="0.1.0",
+    lifespan=lifespan
+)
+
+# Include API routers
+app.include_router(api_handlers_router, prefix="/api")
+logger.info("API router included with prefix /api.")
+
+
+# Optional: Define a custom global exception handler for AvaChatError or others
+# This can be useful to ensure all errors are returned in a consistent format
+# if HTTPErrors from handlers aren't sufficient.
+@app.exception_handler(AvaChatError)
+async def avachat_exception_handler(request: Request, exc: AvaChatError):
+    logger.error(f"Unhandled AvaChatError at API level: {exc}", exc_info=True)
+    # Default error code and message if not more specific from the exception
+    error_code = "AVACHAT_ERROR"
+    error_message = str(exc)
+    status_code = 500  # Internal Server Error by default
+
+    if isinstance(exc, ConfigurationError):
+        error_code = "CONFIGURATION_ERROR"
+        status_code = 503  # Service Unavailable
+    elif isinstance(exc, VectorStoreError):
+        error_code = "VECTOR_STORE_ERROR"
+    elif isinstance(exc, LLMClientError):
+        error_code = "LLM_CLIENT_ERROR"
+        status_code = 502  # Bad Gateway
+    # Add more specific error mapping here if needed
+
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {  # Matches ApiErrorResponse structure
+                "code": error_code,
+                "message": error_message
+            }
+        }
+    )
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    logger.info("Root path '/' accessed.")
+    return {"message": "Welcome to the AvaChat API! Documentation available at /docs or /redoc."}
+
 
 if __name__ == "__main__":
-    logger.info("backend/api_handlers.py executed directly (for info only).")
-    # Example of how an error response would look
-    try:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ApiErrorDetail(code="VALIDATION_ERROR", message="Invalid input provided.").model_dump()
-        )
-    except HTTPException as h:
-        print("\nExample HTTPException structure:")
-        print(f"Status Code: {h.status_code}")
-        print(f"Detail: {h.detail}")
+    import uvicorn
+
+    # This block allows running the server directly using `python backend/api_server.py`
+    # The logger here is the module-level logger defined at the top of this file.
+    logger.info("Attempting to start Uvicorn server for AvaChat API...")
+    uvicorn.run(
+        "backend.api_server:app",  # Path to the FastAPI app instance
+        host=settings.API_SERVER_HOST,
+        port=settings.API_SERVER_PORT,
+        reload=True,  # Enable auto-reload for development (True might be problematic if not run with watchfiles)
+        # Consider `reload_dirs` if you want to specify directories to watch.
+        # Often set to False for production or when using external process managers.
+        log_level=settings.LOG_LEVEL.lower()  # Uvicorn's log level
+    )
+    logger.info("Uvicorn server has been started (or an attempt was made).")
