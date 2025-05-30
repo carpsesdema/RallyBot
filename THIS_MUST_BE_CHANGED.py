@@ -7,7 +7,8 @@
 #OLLAMA_EMBEDDING_DIMENSION=768
 
 # Google Gemini Settings (Cloud LLM)
-#GOOGLE_API_KEY=your_gemini_api_key_here
+GOOGLE_API_KEY=AlzaSyDp51Oh4cRrz77mHOPSlvU2qn03D4j7qN0
+
 #GEMINI_MODEL=models/gemini-2.5-flash-preview-05-20
 #GEMINI_TEMPERATURE=0.7
 
