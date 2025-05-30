@@ -1,7 +1,7 @@
 # backend/api_handlers.py
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from typing import List # Added for type hinting
+from typing import List, Optional # Added Optional for type hinting
 
 # Attempt to import project-specific modules
 try:
@@ -24,7 +24,10 @@ except ImportError as e:
         @classmethod
         def model_validate(cls, data, **kwargs): return cls()
 
-    class QueryRequest(PydanticBaseModel): query_text: str = ""; top_k_chunks: int = 3; model_name: str = "default"
+    class QueryRequest(PydanticBaseModel):
+        query_text: str = ""
+        top_k_chunks: int = 3
+        model_name: Optional[str] = None
     class QueryResponse(PydanticBaseModel): answer: str = ""; retrieved_chunks_details: list = []
     class IngestDirectoryRequest(PydanticBaseModel): directory_path: str = ""
     class IngestDirectoryResponse(PydanticBaseModel): status: str = ""; documents_processed: int = 0; chunks_created: int = 0

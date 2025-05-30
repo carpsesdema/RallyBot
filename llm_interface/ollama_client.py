@@ -34,6 +34,35 @@ class OllamaLLMClient:
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=30.0)  # Sensible timeout
         logger.info(f"OllamaLLMClient initialized for base URL: {self.base_url}")
 
+    async def list_available_models(self) -> List[str]:
+        """
+        Lists available models from the Ollama /api/tags endpoint.
+        """
+        try:
+            logger.debug("Requesting list of available models from Ollama")
+            response = await self._client.get("/api/tags")
+            response.raise_for_status()
+
+            response_data = response.json()
+            if "models" not in response_data:
+                logger.error(f"Ollama models response missing 'models' field. Data: {response_data}")
+                raise LLMClientError(f"Ollama models response missing 'models' field. Full response: {response_data}")
+
+            # Extract model names from the response
+            model_names = [model.get("name", "unknown") for model in response_data["models"]]
+            logger.info(f"Successfully retrieved {len(model_names)} models from Ollama.")
+            return model_names
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error during Ollama models request: {e.response.status_code} - {e.response.text}")
+            raise LLMClientError(f"Ollama API error (models): {e.response.status_code} - {e.response.text}") from e
+        except httpx.RequestError as e:
+            logger.error(f"Request error during Ollama models request: {e}")
+            raise LLMClientError(f"Ollama connection error (models): {e}") from e
+        except Exception as e:
+            logger.exception("Unexpected error in list_available_models")
+            raise LLMClientError(f"Unexpected error communicating with Ollama (models): {e}") from e
+
     async def generate_response(self, prompt: str, model_name: Optional[str] = None) -> str:
         """
         Generates a response from the Ollama /api/generate endpoint.
@@ -126,71 +155,3 @@ class OllamaLLMClient:
         """
         await self._client.aclose()
         logger.info("OllamaLLMClient session closed.")
-
-
-if __name__ == '__main__':
-    import asyncio
-
-    # Basic logging for the example
-    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-
-    async def main():
-        # Use the dummy Settings for this standalone example
-        dummy_settings = Settings()
-        # Point to a live Ollama instance if you want to test actual calls
-        # dummy_settings.OLLAMA_API_URL = "http://host.docker.internal:11434" # if ollama in docker
-
-        client = OllamaLLMClient(settings=dummy_settings)
-
-        try:
-            # Test generate_response
-            # Ensure your Ollama instance is running and has the 'llama3' model (or your default)
-            logger.info("Testing generate_response...")
-            prompt_text = "Why is the sky blue?"
-            # response = await client.generate_response(prompt_text)
-            # logger.info(f"Generated response for '{prompt_text}':\n{response}")
-            logger.info(
-                f"Skipping actual call to generate_response for '{prompt_text}' in this example run, as it requires a live Ollama instance.")
-
-            # Test generate_embeddings
-            # Ensure your Ollama instance has the 'nomic-embed-text' model (or your default)
-            logger.info("\nTesting generate_embeddings...")
-            texts_to_embed = [
-                "Hello from AvaChat!",
-                "This is a test document.",
-                "Large Language Models are powerful."
-            ]
-            # embeddings = await client.generate_embeddings(texts_to_embed)
-            # if embeddings:
-            #     logger.info(f"Generated {len(embeddings)} embeddings.")
-            #     for i, emb in enumerate(embeddings):
-            #         logger.info(f"Embedding for text {i+1} (first 5 dimensions): {emb[:5]}... Dimension: {len(emb)}")
-            logger.info(
-                f"Skipping actual call to generate_embeddings for {len(texts_to_embed)} texts in this example run, as it requires a live Ollama instance.")
-
-        except LLMClientError as e:
-            logger.error(f"LLM Client Error during test: {e}")
-        except EmbeddingGenerationError as e:
-            logger.error(f"Embedding Generation Error during test: {e}")
-        except Exception as e:
-            logger.error(f"An unexpected error occurred during test: {e}")
-        finally:
-            await client.close_session()
-
-
-    # Python 3.7+
-    # asyncio.run(main())
-    # For older versions or environments where asyncio.run might not be ideal:
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(main())
-    except KeyboardInterrupt:
-        logger.info("Test run interrupted by user.")
-    finally:
-        # Ensure event loop is closed properly
-        pending = asyncio.all_tasks(loop=loop)
-        if pending:
-            loop.run_until_complete(asyncio.gather(*pending))
-        loop.close()
-        asyncio.set_event_loop(None)

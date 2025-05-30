@@ -23,6 +23,7 @@ class QueryRequest(BaseModel):
     query_text: str
     session_id: Optional[str] = None
     top_k_chunks: int = Field(default=3, ge=1, le=10)  # Added sensible validation
+    model_name: Optional[str] = None  # Added model_name field
 
 
 class QueryResponse(BaseModel):
@@ -38,6 +39,10 @@ class IngestDirectoryResponse(BaseModel):
     status: str
     documents_processed: int
     chunks_created: int
+
+
+class AvailableModelsResponse(BaseModel):
+    models: List[str]
 
 
 class ApiErrorDetail(BaseModel):
