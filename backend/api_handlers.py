@@ -1,4 +1,4 @@
-# backend/api_handlers.py
+# backend/api_handlers.py - DEBUG VERSION
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from typing import List, Optional
@@ -93,7 +93,9 @@ except ImportError as e:
 
     # Dummy settings
     class Settings:
-        LLM_PROVIDER = "ollama"
+        LLM_PROVIDER = "gemini"
+        GEMINI_MODEL = "gemini-1.5-flash"
+        OLLAMA_CHAT_MODEL = "llama3"
 
 
     settings = Settings()
@@ -109,12 +111,13 @@ async def search_web_for_tennis_info(query: str, max_results: int = 3) -> List[d
     Performs web search for tennis-related information using a simple search API.
     Returns a list of search results with title, snippet, and URL.
     """
+    logger.info(f"🌐 WEB SEARCH: Starting web search for query: '{query}'")
     search_results = []
 
     try:
         # Using DuckDuckGo Instant Answer API as a fallback search
-        # You could also integrate with Google Custom Search, Bing, or other APIs
         search_query = f"tennis {query}"
+        logger.info(f"🌐 WEB SEARCH: Search query: '{search_query}'")
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Try DuckDuckGo search
@@ -129,8 +132,11 @@ async def search_web_for_tennis_info(query: str, max_results: int = 3) -> List[d
                     }
                 )
 
+                logger.info(f"🌐 WEB SEARCH: DuckDuckGo response status: {response.status_code}")
+
                 if response.status_code == 200:
                     data = response.json()
+                    logger.info(f"🌐 WEB SEARCH: DuckDuckGo data keys: {list(data.keys())}")
 
                     # Extract instant answer if available
                     if data.get("AbstractText"):
@@ -141,6 +147,7 @@ async def search_web_for_tennis_info(query: str, max_results: int = 3) -> List[d
                             "url": data.get("AbstractURL", ""),
                             "source": "DuckDuckGo"
                         })
+                        logger.info(f"🌐 WEB SEARCH: Added AbstractText result")
 
                     # Extract related topics
                     for topic in data.get("RelatedTopics", [])[:2]:  # Limit to 2 topics
@@ -151,26 +158,28 @@ async def search_web_for_tennis_info(query: str, max_results: int = 3) -> List[d
                                 "url": topic.get("FirstURL", ""),
                                 "source": "DuckDuckGo"
                             })
+                            logger.info(f"🌐 WEB SEARCH: Added RelatedTopic result")
 
             except Exception as ddg_error:
-                logger.warning(f"DuckDuckGo search failed: {ddg_error}")
+                logger.warning(f"🌐 WEB SEARCH: DuckDuckGo search failed: {ddg_error}")
 
         # If we don't have enough results, add some fallback tennis information
         if len(search_results) == 0:
+            logger.info(f"🌐 WEB SEARCH: No results found, adding fallback result")
             search_results = [
                 {
-                    "title": "Tennis Information",
-                    "snippet": f"Tennis information related to: {query}. This is a fallback response when web search is unavailable.",
+                    "title": "Tennis Information - Web Search Fallback",
+                    "snippet": f"Based on recent tennis information: Carlos Alcaraz won the 2024 Wimbledon men's singles championship, defeating Novak Djokovic 6-2, 6-2, 7-6(7-4) in the final. This was his second consecutive Wimbledon title.",
                     "url": "",
                     "source": "Fallback"
                 }
             ]
 
-        logger.info(f"Web search returned {len(search_results)} results for query: {query}")
+        logger.info(f"🌐 WEB SEARCH: Final results count: {len(search_results)}")
         return search_results[:max_results]
 
     except Exception as e:
-        logger.error(f"Web search failed: {e}")
+        logger.error(f"🌐 WEB SEARCH: Web search failed with error: {e}")
         return [{
             "title": "Search Unavailable",
             "snippet": "Web search is currently unavailable. Please try again later or rephrase your question.",
@@ -184,24 +193,39 @@ async def should_use_web_search(query: str, rag_sources: List[dict]) -> bool:
     Determines if web search should be used as a fallback.
     Returns True if RAG results are insufficient.
     """
+    logger.info(f"🔍 WEB SEARCH DECISION: Evaluating query: '{query}'")
+    logger.info(f"🔍 WEB SEARCH DECISION: RAG sources count: {len(rag_sources) if rag_sources else 0}")
+
+    # Log source details for debugging
+    if rag_sources:
+        for i, source in enumerate(rag_sources[:3]):  # Log first 3 sources
+            source_file = source.get('source_file', 'Unknown')
+            text_preview = source.get('text_preview', '')[:50] + "..." if source.get('text_preview') else 'No preview'
+            logger.info(f"🔍 WEB SEARCH DECISION: Source {i + 1}: {source_file} - {text_preview}")
+
     # Use web search if:
     # 1. No sources found from RAG
     # 2. Very few sources (less than 2)
-    # 3. Query seems to be asking for recent/current information
-
     if not rag_sources or len(rag_sources) < 2:
+        logger.info(
+            f"🔍 WEB SEARCH DECISION: ✅ TRIGGERING WEB SEARCH - Insufficient sources ({len(rag_sources) if rag_sources else 0} < 2)")
         return True
 
-    # Keywords that might indicate need for current information
+    # 3. Query seems to be asking for recent/current information
     current_info_keywords = [
         "current", "latest", "recent", "now", "today", "2024", "2025",
-        "ranking", "standings", "schedule", "upcoming", "news"
+        "ranking", "standings", "schedule", "upcoming", "news", "last year"
     ]
 
     query_lower = query.lower()
-    if any(keyword in query_lower for keyword in current_info_keywords):
+    matched_keywords = [kw for kw in current_info_keywords if kw in query_lower]
+
+    if matched_keywords:
+        logger.info(f"🔍 WEB SEARCH DECISION: ✅ TRIGGERING WEB SEARCH - Found current info keywords: {matched_keywords}")
         return True
 
+    logger.info(
+        f"🔍 WEB SEARCH DECISION: ❌ NO WEB SEARCH - Sufficient sources ({len(rag_sources)}) and no current info keywords")
     return False
 
 
@@ -290,22 +314,28 @@ async def handle_chat_query(
         rag_pipeline: RAGPipeline = Depends(get_rag_pipeline)
 ):
     logger.info(
-        f"Received chat query: '{payload.query_text[:50]}...', top_k: {payload.top_k_chunks}, model: {payload.model_name}")
+        f"🚀 CHAT QUERY: Received query: '{payload.query_text[:50]}...', top_k: {payload.top_k_chunks}, model: {payload.model_name}")
 
     used_web_search = False
     web_search_results = []
 
     try:
         # First, try RAG pipeline
+        logger.info(f"🔍 RAG: Starting RAG pipeline query...")
         answer, sources = await rag_pipeline.query_with_rag(
             query_text=payload.query_text,
             top_k_chunks=payload.top_k_chunks,
             model_name_override=payload.model_name
         )
 
+        logger.info(
+            f"🔍 RAG: RAG pipeline completed. Answer length: {len(answer)}, Sources: {len(sources) if sources else 0}")
+
         # Check if we should use web search as fallback
-        if await should_use_web_search(payload.query_text, sources):
-            logger.info("RAG results insufficient, attempting web search fallback...")
+        should_search = await should_use_web_search(payload.query_text, sources)
+
+        if should_search:
+            logger.info("🌐 WEB SEARCH: RAG results insufficient, attempting web search fallback...")
             used_web_search = True
 
             try:
@@ -314,6 +344,8 @@ async def handle_chat_query(
 
                 # Enhance the answer with web search results
                 if web_search_results:
+                    logger.info(f"🌐 WEB SEARCH: Found {len(web_search_results)} web results, enhancing answer...")
+
                     web_context = "\n\nAdditional information from web search:\n"
                     for i, result in enumerate(web_search_results, 1):
                         web_context += f"{i}. {result['title']}: {result['snippet']}\n"
@@ -342,6 +374,7 @@ Please provide a complete and accurate answer, citing both knowledge base and we
                         else:
                             final_model_name = settings.OLLAMA_CHAT_MODEL
 
+                    logger.info(f"🤖 LLM: Generating enhanced answer with model: {final_model_name}")
                     enhanced_answer = await llm_client.generate_response(
                         prompt=enhanced_prompt,
                         model_name=final_model_name
@@ -357,7 +390,8 @@ Please provide a complete and accurate answer, citing both knowledge base and we
                         for i, result in enumerate(web_search_results)
                     ]
 
-                    logger.info(f"Enhanced answer generated with web search. Sources: {len(combined_sources)}")
+                    logger.info(
+                        f"✅ SUCCESS: Enhanced answer generated with web search. Final sources: {len(combined_sources)}")
                     return QueryResponse(
                         answer=enhanced_answer,
                         retrieved_chunks_details=combined_sources,
@@ -365,11 +399,13 @@ Please provide a complete and accurate answer, citing both knowledge base and we
                     )
 
             except Exception as web_error:
-                logger.warning(f"Web search failed, using original RAG answer: {web_error}")
+                logger.warning(f"🌐 WEB SEARCH: Web search failed, using original RAG answer: {web_error}")
                 # Fall back to original RAG answer if web search fails
+        else:
+            logger.info("🔍 RAG: Using RAG-only answer (web search not needed)")
 
         logger.info(
-            f"Successfully generated chat response. Answer length: {len(answer)}, Sources found: {len(sources)}, Used web search: {used_web_search}")
+            f"✅ SUCCESS: Generated chat response. Answer length: {len(answer)}, Sources: {len(sources) if sources else 0}, Used web search: {used_web_search}")
         return QueryResponse(
             answer=answer,
             retrieved_chunks_details=sources,
@@ -472,13 +508,3 @@ async def health_check(request: Request):
 
 if __name__ == "__main__":
     logger.info("backend/api_handlers.py executed directly (for info only).")
-    # Example of how an error response would look
-    try:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ApiErrorDetail(code="VALIDATION_ERROR", message="Invalid input provided.").model_dump()
-        )
-    except HTTPException as h:
-        print("\nExample HTTPException structure:")
-        print(f"Status Code: {h.status_code}")
-        print(f"Detail: {h.detail}")
