@@ -29,6 +29,7 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     retrieved_chunks_details: Optional[List[Dict[str, Any]]] = None
+    used_web_search: bool = Field(default=False)  # NEW: Track if web search was used
 
 
 class IngestDirectoryRequest(BaseModel):
@@ -90,6 +91,18 @@ if __name__ == '__main__':
         print("Example ChatMessage tests would run here.")
     except Exception as e:  # Catch generic Exception if Pydantic isn't there
         print(f"Error (expected for 'system' role or if Pydantic not found): {e}")
+
+    # Test new QueryResponse with web search field
+    print("\nQueryResponse with web search:")
+    try:
+        response_with_web = QueryResponse(
+            answer="Carlos Alcaraz won Wimbledon 2024",
+            retrieved_chunks_details=[],
+            used_web_search=True
+        )
+        print(f"Web Search Response: {response_with_web.model_dump_json(indent=2)}")
+    except Exception as e:
+        print(f"Error testing QueryResponse: {e}")
 
     # Add more example tests here if needed, wrapped in try-except for Pydantic presence
     print("\n--- End Pydantic Models Test ---")

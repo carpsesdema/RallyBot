@@ -28,3 +28,8 @@ python-dotenv # For loading .env files (optional, but good practice)
 # For development and testing (optional to list here, can be in a dev-requirements.txt)
 # pytest
 # pytest-asyncio
+
+
+googlesearch-python
+beautifulsoup4
+requests
