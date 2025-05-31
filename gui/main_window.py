@@ -22,13 +22,16 @@ except ImportError as e:
     print(f"Import error in gui/main_window.py: {e}")
 
 
-    class settings:
+    class settings:  # Fallback
         API_SERVER_HOST = "127.0.0.1"
         API_SERVER_PORT = 8000
         LOG_LEVEL = "INFO"
         LLM_PROVIDER = "gemini"
         KNOWLEDGE_BASE_DIR = Path("./kb_docs_dummy")
         GEMINI_MODEL = "gemini-dummy-gui"
+        REMOTE_BACKEND_URL = None  # Added REMOTE_BACKEND_URL for fallback
+        LOCAL_API_SERVER_HOST = "127.0.0.1"
+        LOCAL_API_SERVER_PORT = 8000  # Added for fallback ApiClient
 
 
     class QueryRequest:
@@ -49,13 +52,13 @@ except ImportError as e:
             self.error_response = error_response
 
 
-    class ApiClient:
-        def __init__(self, settings_obj): pass
+    class ApiClient:  # Fallback ApiClient
+        def __init__(self, app_settings): self.settings = app_settings  # Matches corrected call
 
         async def post_chat_query(self, payload): return type('obj', (), {'answer': 'Mock Gemini response',
                                                                           'retrieved_chunks_details': []})()
 
-        async def get_available_models(self): return AvailableModelsResponse(models=[settings.GEMINI_MODEL])
+        async def get_available_models(self): return AvailableModelsResponse(models=[self.settings.GEMINI_MODEL])
 
         async def close(self): pass
 
@@ -64,7 +67,7 @@ logger = logging.getLogger(__name__)
 
 class BackendManager(QObject):
     status_changed = Signal(bool)
-    log_message = Signal(str)  # This signal will now primarily be for console logging via add_system_message
+    log_message = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -80,7 +83,6 @@ class BackendManager(QObject):
         if self.is_running: self.log_message.emit("Backend is already running."); return
         try:
             cmd = [sys.executable, "-u", "-m", "backend.api_server"]
-            # Log to console via the signal/slot connected to add_system_message
             self.log_message.emit(f"Attempting to start backend with: {' '.join(cmd)}")
             project_root_dir = Path(__file__).parent.parent
             self.stdout_log_file = project_root_dir / "backend_stdout.log"
@@ -156,11 +158,11 @@ class ChatWorker(QObject):
         try:
             payload = QueryRequest(query_text=query_text, model_name=model_name)
             logger.debug(
-                f"ChatWorker: Calling api_client.post_chat_query with payload: {payload.model_dump() if hasattr(payload, 'model_dump') else payload.__dict__}")
+                f"ChatWorker: Calling api_client.post_chat_query with payload: {payload.model_dump() if hasattr(payload, 'model_dump') else payload.__dict__}")  # type: ignore
             response = loop.run_until_complete(self.api_client.post_chat_query(payload))
             logger.info(
-                f"ChatWorker: Received response from api_client: Answer length {len(response.answer if hasattr(response, 'answer') else '')}")
-            self.response_received.emit(response.answer, response.retrieved_chunks_details or [])
+                f"ChatWorker: Received response from api_client: Answer length {len(response.answer if hasattr(response, 'answer') else '')}")  # type: ignore
+            self.response_received.emit(response.answer, response.retrieved_chunks_details or [])  # type: ignore
         except ApiClientError as e:
             logger.error(f"ChatWorker: ApiClientError in send_query: {e}", exc_info=True)
             self.error_occurred.emit(f"API Error: {str(e.message if hasattr(e, 'message') else e)}")
@@ -175,15 +177,15 @@ class ChatWorker(QObject):
         try:
             response = loop.run_until_complete(self.api_client.get_available_models())
             logger.info(
-                f"ChatWorker: Received models from api_client: {response.models if hasattr(response, 'models') else 'N/A'}")
-            self.available_models_received.emit(response.models)
+                f"ChatWorker: Received models from api_client: {response.models if hasattr(response, 'models') else 'N/A'}")  # type: ignore
+            self.available_models_received.emit(response.models)  # type: ignore
         except ApiClientError as e:
             logger.error(f"ChatWorker: ApiClientError in fetch_available_models: {e}", exc_info=True)
             detailed_error = str(e.message if hasattr(e, 'message') else e)
             if hasattr(e, 'status_code') and e.status_code: detailed_error += f" (Status: {e.status_code})"
             if hasattr(e, 'error_response') and e.error_response and hasattr(e.error_response, 'error') and hasattr(
-                    e.error_response.error, 'message'):
-                detailed_error += f" Detail: {e.error_response.error.message}"
+                    e.error_response.error, 'message'):  # type: ignore
+                detailed_error += f" Detail: {e.error_response.error.message}"  # type: ignore
             self.error_occurred.emit(f"API Error fetching models: {detailed_error}")
         except Exception as e:
             logger.error(f"ChatWorker: Exception in fetch_available_models: {e}", exc_info=True)
@@ -260,14 +262,10 @@ class MainWindow(QMainWindow):
         input_layout.addWidget(self.send_button)
         input_layout.addWidget(self.ingest_button)
         layout.addWidget(input_frame)
-        # Initial welcome message still goes to GUI, but others can be console-only.
         self.add_message("system", "Welcome! System is hardcoded for Gemini. Start the backend to begin.")
         logger.info("UI setup complete.")
 
     def setup_styling(self):
-        # System message color is now irrelevant for the chat display styling if not shown there.
-        # The color #ffd54f was for the previous yellow system text.
-        # If you want a general system message style for what IS shown (like initial welcome), keep it or adjust.
         self.setStyleSheet("""
             QMainWindow { background-color: #1e1e1e; color: #ffffff; }
             QFrame { background-color: #2d2d2d; border: 1px solid #404040; border-radius: 8px; margin: 2px; padding: 8px; }
@@ -282,11 +280,10 @@ class MainWindow(QMainWindow):
             QPushButton#stop_button { background-color: #d13438; } QPushButton#stop_button:hover { background-color: #b02b2f; }
             QPushButton#ingest_button { background-color: #8764b8; } QPushButton#ingest_button:hover { background-color: #744da9; }
             QLabel { color: #ffffff; font-weight: 500; }
-            QLabel#title_label { color: #ffd700; font-size: 18px; font-weight: bold; } /* Gold for title */
+            QLabel#title_label { color: #ffd700; font-size: 18px; font-weight: bold; }
             QLabel#status_label { font-weight: bold; padding: 4px 8px; border-radius: 4px; }
             QLabel#model_display_label { font-weight: normal; padding: 4px 8px; color: #cccccc; }
-            /* Style for the initial system message in chat if desired */
-            QTextEdit div[style*="background-color: #1a1a2e;"] span { color: #a9d1ff !important; } /* Light blue for system messages */
+            QTextEdit div[style*="background-color: #1a1a2e;"] span { color: #a9d1ff !important; }
         """)
         logger.info("Styling applied.")
 
@@ -295,7 +292,6 @@ class MainWindow(QMainWindow):
         self.backend_manager = BackendManager()
         self.backend_manager.moveToThread(self.backend_thread)
         self.backend_manager.status_changed.connect(self.on_backend_status_changed)
-        # This connection now primarily drives console logging for backend manager messages
         self.backend_manager.log_message.connect(self.add_system_message)
         self.backend_thread.start()
         logger.info("BackendManager setup and thread started.")
@@ -305,7 +301,8 @@ class MainWindow(QMainWindow):
             logger.info("ChatWorker and thread already running. No re-setup needed.")
             return
         if not self.api_client:
-            self.api_client = ApiClient(settings_obj=settings)
+            # Corrected keyword argument here
+            self.api_client = ApiClient(app_settings=settings)
             logger.info("ApiClient initialized in setup_chat_worker.")
         self.chat_thread = QThread(self)
         self.chat_worker = ChatWorker(self.api_client)
@@ -369,14 +366,14 @@ class MainWindow(QMainWindow):
     def on_available_models_received(self, models: List[str]):
         logger.info(f"GUI on_available_models_received: {models}")
         if models and models[0] == self.current_llm_model_name:
-            self.add_system_message(f"Model confirmation: Backend reports using '{models[0]}'.")  # Console Log
+            self.add_system_message(f"Model confirmation: Backend reports using '{models[0]}'.")
             self.model_display_label.setText(f"Model: {models[0]} (Hardcoded)")
         elif models:
             self.add_system_message(
-                f"Warning: Backend model list {models} differs from expected '{self.current_llm_model_name}'.")  # Console Log
+                f"Warning: Backend model list {models} differs from expected '{self.current_llm_model_name}'.")
             self.model_display_label.setText(f"Model: {models[0]} (From Backend)")
         else:
-            self.add_system_message("Warning: No models list received from backend.")  # Console Log
+            self.add_system_message("Warning: No models list received from backend.")
             self.model_display_label.setText(f"Model: {self.current_llm_model_name} (UI Default)")
 
     @Slot()
@@ -385,9 +382,8 @@ class MainWindow(QMainWindow):
         if not query:
             logger.info("Send message: Empty query, doing nothing.")
             return
-        self.add_message("user", query)  # Add user message to GUI
-        self.add_system_message(
-            f"Sending query (backend will use Gemini: {self.current_llm_model_name})")  # Console Log
+        self.add_message("user", query)
+        self.add_system_message(f"Sending query (backend will use Gemini: {self.current_llm_model_name})")
         self.input_field.clear()
         self.send_button.setEnabled(False)
         self.request_chat_query_signal.emit(query, self.current_llm_model_name)
@@ -400,11 +396,11 @@ class MainWindow(QMainWindow):
         start_dir = str(settings.KNOWLEDGE_BASE_DIR if settings.KNOWLEDGE_BASE_DIR.exists() else Path("."))
         directory = QFileDialog.getExistingDirectory(self, "Select Tennis Documents Directory", start_dir)
         if directory:
-            self.add_system_message(f"Ingestion requested for: {directory}")  # Console Log
+            self.add_system_message(f"Ingestion requested for: {directory}")
             QMessageBox.information(self, "Document Ingestion",
                                     f"Ingestion for '{Path(directory).name}' started. (Placeholder)")
             self.add_system_message(
-                f"Note: Full ingestion functionality requires connecting this button to an API call.")  # Console Log
+                f"Note: Full ingestion functionality requires connecting this button to an API call.")
 
     @Slot(str, list)
     def on_response_received(self, answer, sources):
@@ -416,18 +412,14 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def on_error_occurred(self, error_message):
         logger.error(f"GUI on_error_occurred: {error_message}")
-        # Displaying errors in the chat window is still useful
         self.add_message("error", error_message)
         self.send_button.setEnabled(True)
         self.input_field.setFocus()
 
     def add_message(self, role, content, sources=None):
-        # This method now only adds "user", "assistant", and "error" messages to the GUI.
-        # And the initial "system" welcome message.
-        if role not in ["user", "assistant", "error", "system"]:  # Filter out other system messages from GUI
+        if role not in ["user", "assistant", "error", "system"]:
             logger.warning(f"add_message called with unexpected role '{role}'. Message: {content}")
             return
-
         cursor = self.chat_display.textCursor()
         cursor.movePosition(QTextCursor.End)
         role_map = {
@@ -439,7 +431,6 @@ class MainWindow(QMainWindow):
                 '<div style="margin: 15px 0; padding: 10px; background-color: #5d1a1a; border-radius: 8px; border-left: 4px solid #f44336;"><b style="color: #ef5350;">❌ Error:</b> <span style="color: #ffffff;">{content}</span></div>'),
             "system": (
                 '<div style="margin: 10px 0; padding: 8px; background-color: #1a1a2e; border-radius: 6px;"><span style="color: #a9d1ff !important; font-style: italic;">🔧 {content}</span></div>')
-            # Light blue for initial welcome
         }
         sources_html_content = ""
         if role == "assistant" and sources:
@@ -457,22 +448,15 @@ class MainWindow(QMainWindow):
             cursor.insertHtml(html)
             self.chat_display.setTextCursor(cursor)
             self.chat_display.ensureCursorVisible()
-        else:  # Should not happen with the role check above
+        else:
             logger.error(f"Attempted to add_message with unknown role: {role}")
 
     def add_system_message(self, message: str):
-        """
-        Logs system messages to the console/logger.
-        These messages will NOT appear in the chat GUI display, except for the initial welcome.
-        """
         logger.info(f"System Info (Console Only): {message}")
-        # The initial "Welcome!" message is added directly via self.add_message in setup_ui
-        # All other calls to add_system_message (e.g., from BackendManager, status checks)
-        # will now only log to the console.
 
     def closeEvent(self, event):
         logger.info("Close event triggered.")
-        self.add_system_message("Shutting down...")  # This will now be a console log
+        self.add_system_message("Shutting down...")
         if self.status_timer.isActive(): self.status_timer.stop()
         if self.backend_manager:
             if self.backend_manager.is_running:
@@ -507,12 +491,12 @@ class MainWindow(QMainWindow):
                     loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
                 if hasattr(self.api_client, 'close') and asyncio.iscoroutinefunction(self.api_client.close):
                     loop.run_until_complete(self.api_client.close())
-                    self.add_system_message("API client closed.")  # Console log
+                    self.add_system_message("API client closed.")
                     logger.info("API client closed.")
                 else:
                     logger.info("API client does not have an async close method or it's not a coroutine.")
             except Exception as e:
-                self.add_system_message(f"Error closing API client: {e}")  # Console log
+                self.add_system_message(f"Error closing API client: {e}")
                 logger.error(f"Error closing API client: {e}", exc_info=True)
             finally:
                 if 'loop' in locals() and not loop.is_closed() and not asyncio.get_event_loop_policy().get_event_loop().is_running():
@@ -522,11 +506,9 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    # Configure logging - this will make logger.info() from MainWindow appear in console
     logging.basicConfig(level=settings.LOG_LEVEL.upper(),
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                        stream=sys.stdout)  # Ensure logs go to stdout for console visibility
-
+                        stream=sys.stdout)
     project_root = Path(__file__).resolve().parent.parent
     if str(project_root) not in sys.path: sys.path.insert(0, str(project_root)); logger.info(
         f"Added project root: {project_root}")
