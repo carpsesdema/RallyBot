@@ -40,6 +40,11 @@ except ImportError as e:
             self.model_name = model_name
 
 
+    class IngestDirectoryRequest:
+        def __init__(self, directory_path, **kwargs):
+            self.directory_path = directory_path
+
+
     class AvailableModelsResponse:
         models: List[str] = [settings.GEMINI_MODEL]
 
@@ -59,6 +64,10 @@ except ImportError as e:
                                                                           'retrieved_chunks_details': []})()
 
         async def get_available_models(self): return AvailableModelsResponse(models=[self.settings.GEMINI_MODEL])
+
+        async def post_ingest_directory(self, payload): return type('obj', (),
+                                                                    {'status': 'success', 'documents_processed': 5,
+                                                                     'chunks_created': 25})()
 
         async def close(self): pass
 
@@ -136,6 +145,9 @@ class ChatWorker(QObject):
     response_received = Signal(str, list)
     available_models_received = Signal(list)
     error_occurred = Signal(str)
+    # Add new signals for ingestion
+    ingest_completed = Signal(str, int, int)  # status, docs_processed, chunks_created
+    ingest_error = Signal(str)
 
     def __init__(self, api_client: ApiClient):
         super().__init__()
@@ -148,7 +160,8 @@ class ChatWorker(QObject):
             try:
                 self._loop = asyncio.get_running_loop()
             except RuntimeError:
-                self._loop = asyncio.new_event_loop(); asyncio.set_event_loop(self._loop)
+                self._loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._loop)
         return self._loop
 
     @Slot(str, str)
@@ -191,10 +204,29 @@ class ChatWorker(QObject):
             logger.error(f"ChatWorker: Exception in fetch_available_models: {e}", exc_info=True)
             self.error_occurred.emit(f"Error fetching models: {str(e)}")
 
+    @Slot(str)
+    def ingest_documents(self, directory_path: str):
+        """Handle document ingestion"""
+        logger.info(f"ChatWorker: ingest_documents called for directory: {directory_path}")
+        loop = self._ensure_event_loop()
+        try:
+            payload = IngestDirectoryRequest(directory_path=directory_path)
+            response = loop.run_until_complete(self.api_client.post_ingest_directory(payload))
+            logger.info(
+                f"ChatWorker: Ingestion response: {response.status}, docs: {response.documents_processed}, chunks: {response.chunks_created}")
+            self.ingest_completed.emit(response.status, response.documents_processed, response.chunks_created)
+        except ApiClientError as e:
+            logger.error(f"ChatWorker: ApiClientError in ingest_documents: {e}", exc_info=True)
+            self.ingest_error.emit(str(e.message if hasattr(e, 'message') else e))
+        except Exception as e:
+            logger.error(f"ChatWorker: Exception in ingest_documents: {e}", exc_info=True)
+            self.ingest_error.emit(str(e))
+
 
 class MainWindow(QMainWindow):
     request_chat_query_signal = Signal(str, str)
     request_available_models_signal = Signal()
+    request_ingest_signal = Signal(str)  # Add new signal for ingestion
 
     def __init__(self):
         super().__init__()
@@ -301,17 +333,25 @@ class MainWindow(QMainWindow):
             logger.info("ChatWorker and thread already running. No re-setup needed.")
             return
         if not self.api_client:
-            # Corrected keyword argument here
             self.api_client = ApiClient(app_settings=settings)
             logger.info("ApiClient initialized in setup_chat_worker.")
+
         self.chat_thread = QThread(self)
         self.chat_worker = ChatWorker(self.api_client)
         self.chat_worker.moveToThread(self.chat_thread)
+
+        # Connect existing signals
         self.chat_worker.response_received.connect(self.on_response_received)
         self.chat_worker.available_models_received.connect(self.on_available_models_received)
         self.chat_worker.error_occurred.connect(self.on_error_occurred)
         self.request_chat_query_signal.connect(self.chat_worker.send_query)
         self.request_available_models_signal.connect(self.chat_worker.fetch_available_models)
+
+        # Connect new ingest signals
+        self.request_ingest_signal.connect(self.chat_worker.ingest_documents)
+        self.chat_worker.ingest_completed.connect(self.on_ingest_completed)
+        self.chat_worker.ingest_error.connect(self.on_ingest_error)
+
         self.chat_thread.start()
         logger.info("ChatWorker setup complete, thread started, and signals connected.")
 
@@ -393,14 +433,37 @@ class MainWindow(QMainWindow):
         if not self.backend_manager or not self.backend_manager.is_running:
             QMessageBox.warning(self, "Backend Offline", "Please start the backend server first.")
             return
+
         start_dir = str(settings.KNOWLEDGE_BASE_DIR if settings.KNOWLEDGE_BASE_DIR.exists() else Path("."))
         directory = QFileDialog.getExistingDirectory(self, "Select Tennis Documents Directory", start_dir)
         if directory:
-            self.add_system_message(f"Ingestion requested for: {directory}")
-            QMessageBox.information(self, "Document Ingestion",
-                                    f"Ingestion for '{Path(directory).name}' started. (Placeholder)")
+            self.add_system_message(f"Starting document ingestion for: {directory}")
+            self.ingest_button.setEnabled(False)  # Disable during ingestion
+            self.ingest_button.setText("Ingesting...")
+
+            # Actually call the ingest API
+            self.request_ingest_signal.emit(directory)
+
+    @Slot(str, int, int)  # status, docs_processed, chunks_created
+    def on_ingest_completed(self, status: str, docs_processed: int, chunks_created: int):
+        self.ingest_button.setEnabled(True)
+        self.ingest_button.setText("Load Tennis Documents")
+
+        if status == "success":
             self.add_system_message(
-                f"Note: Full ingestion functionality requires connecting this button to an API call.")
+                f"✅ Ingestion complete! Processed {docs_processed} documents, created {chunks_created} chunks.")
+            QMessageBox.information(self, "Ingestion Complete",
+                                    f"Successfully ingested {docs_processed} documents into {chunks_created} chunks.")
+        else:
+            self.add_system_message(f"❌ Ingestion failed: {status}")
+            QMessageBox.warning(self, "Ingestion Failed", f"Document ingestion failed: {status}")
+
+    @Slot(str)
+    def on_ingest_error(self, error_message: str):
+        self.ingest_button.setEnabled(True)
+        self.ingest_button.setText("Load Tennis Documents")
+        self.add_system_message(f"❌ Ingestion error: {error_message}")
+        QMessageBox.critical(self, "Ingestion Error", f"Failed to ingest documents: {error_message}")
 
     @Slot(str, list)
     def on_response_received(self, answer, sources):
@@ -488,7 +551,8 @@ class MainWindow(QMainWindow):
                 try:
                     loop = asyncio.get_running_loop()
                 except RuntimeError:
-                    loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
                 if hasattr(self.api_client, 'close') and asyncio.iscoroutinefunction(self.api_client.close):
                     loop.run_until_complete(self.api_client.close())
                     self.add_system_message("API client closed.")
