@@ -31,4 +31,5 @@ dist/
 # If you have other local development folders/files, add them here!
 # Example:
 # my_local_notes.txt
-# /tests_output/
+# /tests_output//upload_and_ingest.py
+/tools/
