@@ -1,0 +1,34 @@
+# .dockerignore
+
+Dockerfile
+.dockerignore
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.idea/
+.vscode/
+*.env
+.env.*
+local.env
+.pytest_cache/
+htmlcov/
+*.log
+_test_docs_temp/
+_test_vector_store/
+backend_stdout.log
+backend_stderr.log
+venv/
+.venv/
+env/
+*.DS_Store
+build/
+dist/
+*.egg-info/
+
+# If you have other local development folders/files, add them here!
+# Example:
+# my_local_notes.txt
+# /tests_output/

@@ -1,35 +1,24 @@
 # requirements.txt
-google-generativeai
+
 # Core Frameworks
-fastapi
-uvicorn[standard]
-pyside6
-httpx
-pydantic # Pydantic V2 is critical
+fastapi==0.110.0
+uvicorn[standard]==0.29.0 # For running the FastAPI app
+httpx==0.27.0 # For making async HTTP requests (to Ollama, web search APIs, etc.)
+pydantic==2.6.4 # For data validation and settings
 
 # LLM & RAG
-# ollama # This is usually a CLI tool, not a Python library to list here.
-# We interact with Ollama via HTTP requests using httpx.
+google-generativeai==0.5.2
 
 # Vector Store (FAISS)
-faiss-cpu # Or faiss-gpu if you have the hardware and setup for it
-numpy # Often a dependency for FAISS and numerical operations
+faiss-cpu==1.8.0 # Or faiss-gpu if you have the hardware and setup for it
+numpy==1.26.4 # Often a dependency for FAISS and numerical operations
+packaging==23.2 # ADDED: For FAISS runtime import
 
-# Document Loading (add more as needed)
-python-dotenv # For loading .env files (optional, but good practice)
-# PyPDF2 # Example if you plan to support PDF files
-# python-docx # Example for .docx files
-# beautifulsoup4 # Example for HTML files
-# unstructured # A comprehensive library for various unstructured data
+# Document Loading & Web Search
+python-dotenv==1.0.1 # For loading .env files
+googlesearch-python==1.2.3 # For the web_search.py (if you keep that logic)
+beautifulsoup4==4.12.2 # For parsing HTML (used by web_search.py)
+requests==2.31.0 # Often pulled in by other libraries or for simple sync calls
 
-# Logging & Utilities
-# Standard library: logging, pathlib, sys, os, datetime, uuid
-
-# For development and testing (optional to list here, can be in a dev-requirements.txt)
-# pytest
-# pytest-asyncio
-
-
-googlesearch-python
-beautifulsoup4
-requests
+# Note: pyside6 is a GUI dependency and has been removed for the backend image.
+# Note: 'ollama' is a service, not a pip-installable Python library for this context.
