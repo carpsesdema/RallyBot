@@ -6,27 +6,22 @@ FROM python:3.10-slim-buster
 # 2. Set Environment Variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    # PORT for the Uvicorn server; api_server.py already respects this
-    # Railway will provide its own $PORT which os.getenv('PORT') in Python will pick up.
-    # This ENV PORT here acts as a default if not set, and is used by EXPOSE.
     PORT=8000 \
-    # HOST for Uvicorn, ensuring it listens on all interfaces within the container
     HOST=0.0.0.0 \
-    # Indicate running environment for any conditional logic (optional)
-    APP_ENV=docker
+    APP_ENV=docker \
+    # Ensure Python can find modules in the /app directory
+    PYTHONPATH=/app
 
 # 3. Create and Set Workdir
 WORKDIR /app
 
 # 4. Install system dependencies
-# libgomp1 is often needed by libraries like faiss-cpu or numpy for OpenMP
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libgomp1 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # 5. Copy requirements.txt and Install Python Dependencies
-# Copying requirements first leverages Docker's layer caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
@@ -34,16 +29,14 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # 6. Copy Application Code
 # Create directories that config.py might try to validate/create,
 # ensuring they exist within the image.
-# These will be in /app/knowledge_base_docs and /app/vector_store
+# These are placeholders if not using a volume for these initial paths.
+# If a volume is mounted at /data, then KNOWLEDGE_BASE_DIR=/data/kb etc. will use the volume.
 RUN mkdir -p ./knowledge_base_docs ./vector_store
 COPY . .
 
 # 7. Expose Port that the application runs on
-# This should match the PORT environment variable Uvicorn will use
-# Note: Python script will listen on Railway's $PORT, EXPOSE here is more for Docker documentation
 EXPOSE ${PORT}
 
 # 8. CMD (Command to run the application)
-# Runs the FastAPI application by executing the api_server.py script.
-# The script itself handles starting uvicorn with the correct host and port from environment variables.
-CMD ["python", "backend/api_server.py"]
+# Run backend.api_server as a module from the /app directory
+CMD ["python", "-m", "backend.api_server"]
