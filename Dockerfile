@@ -7,9 +7,10 @@ FROM python:3.10-slim-buster
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     # PORT for the Uvicorn server; api_server.py already respects this
+    # Railway will provide its own $PORT which os.getenv('PORT') in Python will pick up.
+    # This ENV PORT here acts as a default if not set, and is used by EXPOSE.
     PORT=8000 \
     # HOST for Uvicorn, ensuring it listens on all interfaces within the container
-    # This is not strictly needed if using the direct uvicorn CMD below, but good for clarity
     HOST=0.0.0.0 \
     # Indicate running environment for any conditional logic (optional)
     APP_ENV=docker
@@ -39,11 +40,10 @@ COPY . .
 
 # 7. Expose Port that the application runs on
 # This should match the PORT environment variable Uvicorn will use
+# Note: Python script will listen on Railway's $PORT, EXPOSE here is more for Docker documentation
 EXPOSE ${PORT}
 
 # 8. CMD (Command to run the application)
-# Runs the FastAPI application using Uvicorn.
-# The host 0.0.0.0 makes the server accessible from outside the container.
-# The port is taken from the ENV PORT variable.
-# backend.api_server:app refers to the 'app' FastAPI instance in 'backend/api_server.py'
-CMD ["uvicorn", "backend.api_server:app", "--host", "0.0.0.0", "--port", "8000"]
+# Runs the FastAPI application by executing the api_server.py script.
+# The script itself handles starting uvicorn with the correct host and port from environment variables.
+CMD ["python", "backend/api_server.py"]
