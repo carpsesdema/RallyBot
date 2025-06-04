@@ -22,3 +22,5 @@ requests # Often pulled in by other libraries or for simple sync calls
 
 # Note: pyside6 is a GUI dependency and has been removed for the backend image.
 # Note: 'ollama' is a service, not a pip-installable Python library for this context.
+
+python-multipart
