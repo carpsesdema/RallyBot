@@ -126,3 +126,4 @@ vector_store/       # Vector store indexes should generally be built, not commit
 *.sqlite
 *.sqlite3
 /tools/
+!/backend_stderr.log
