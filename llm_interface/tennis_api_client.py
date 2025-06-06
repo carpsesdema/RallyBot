@@ -1,4 +1,4 @@
-# llm_interface/professional_tennis_client.py - ZERO HARDCODING, ENTERPRISE GRADE
+# llm_interface/tennis_api_client.py
 import httpx
 import logging
 import sqlite3
@@ -11,7 +11,8 @@ import asyncio
 from contextlib import asynccontextmanager
 
 try:
-    from config.tennis_api_config import tennis_config, TennisAPIConfig
+    # FIXED: Corrected the import path to point to the main config.py file
+    from config import tennis_config, TennisAPIConfig
 except ImportError:
     # Fallback if config not available
     class MockConfig:
