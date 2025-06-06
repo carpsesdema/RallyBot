@@ -1,10 +1,11 @@
-# requirements.txt - Enhanced Tennis Intelligence System
+# requirements.txt - Production Ready
 
 # Core Frameworks
 fastapi
 uvicorn[standard]
 httpx
 pydantic
+gunicorn
 
 # LLM & AI
 google-generativeai
@@ -14,60 +15,18 @@ faiss-cpu
 numpy
 packaging
 
-# Database & Storage
-sqlalchemy  # For advanced database operations
-alembic  # For database migrations
-
-# Data Processing & Analysis
-pandas # For statistical analysis
-scipy  # For advanced calculations
+# Database (SQLAlchemy/Alembic for future migrations)
+sqlalchemy
+alembic
 
 # Configuration & Environment
 python-dotenv
 
-# Web Scraping (for future custom data sources)
+# Web Scraping & Data Extraction
 beautifulsoup4
 requests
-selenium
 lxml
+googlesearch-python
 
-# Data Validation & Serialization
+# Misc
 python-multipart
-
-# Date/Time Handling
-python-dateutil
-
-# Logging & Monitoring
-structlog # Structured logging for better analytics
-
-# Performance & Caching
-redis  # For caching API responses
-aioredis  # Async Redis client
-
-# Testing (for robust development)
-pytest
-pytest-asyncio
-pytest-httpx
-
-# Optional: Advanced Analytics
-scikit-learn
-matplotlib
-seaborn
-
-# Optional: API Documentation
-fastapi-users
-python-jose[cryptography]
-passlib[bcrypt]
-
-####
-
-# Development Notes:
-# - sqlite3 is built into Python, no separate install needed
-# - Redis is optional but recommended for caching API responses
-# - Selenium requires ChromeDriver for web scraping
-# - scikit-learn enables ML-based betting predictions
-# - fastapi-users optional for multi-user systems
-
-# Production Deployment:
-# For Railway/production, consider:
-# - gunicorn instead of uvicorn for better performance

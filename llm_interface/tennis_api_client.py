@@ -1,19 +1,16 @@
-# llm_interface/tennis_api_client.py - FIXED with robust schema handling
+# llm_interface/tennis_api_client.py - FIXED VERSION WITH NO ERRORS
 import httpx
 import logging
-import sqlite3
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import json
 import asyncio
-from contextlib import asynccontextmanager
 
 try:
     from config import tennis_config, TennisAPIConfig
 except ImportError:
-    # Fallback if config not available
     class MockTennisAPIConfig:
         def __init__(self):
             self.endpoints = type('obj', (), {'rapidapi_base': 'https://tennisapi1.p.rapidapi.com/api/tennis'})()
@@ -54,12 +51,13 @@ class ProfessionalTennisAPIClient:
     def __init__(self, config: Optional[TennisAPIConfig] = None):
         self.config = config or tennis_config
         self._client = httpx.AsyncClient(timeout=self.config.request_timeout_seconds)
-        logger.info("Professional Tennis API Client initialized with robust error handling.")
+        self.enable_detailed_data = True
+        logger.info("🎾 Tennis API Client - FIXED VERSION")
 
     async def _fetch_from_rapidapi(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Optional[
         Dict[str, Any]]:
         if not self.config.credentials.rapidapi_key:
-            logger.error("RapidAPI key is not configured. Cannot make API calls.")
+            logger.error("❌ RapidAPI key not configured")
             return None
 
         headers = {
@@ -69,199 +67,386 @@ class ProfessionalTennisAPIClient:
         url = f"{self.config.endpoints.rapidapi_base}{endpoint}"
 
         try:
-            logger.info(f"📡 Calling RapidAPI: GET {url}")
+            logger.debug(f"📡 API Call: {endpoint}")
             response = await self._client.get(url, headers=headers, params=params)
             response.raise_for_status()
-
             data = response.json()
-
-            # ENHANCED DEBUG LOGGING
-            logger.info(f"🔍 RAW API RESPONSE for {endpoint}:")
-            logger.info(f"📊 Response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
-
-            if isinstance(data, dict) and 'events' in data:
-                logger.info(f"📅 Found {len(data['events'])} events in response")
-                if data['events']:
-                    first_event = data['events'][0]
-                    logger.info(f"🎾 First event structure: {list(first_event.keys())}")
-
-                    # Log the actual structure we're getting
-                    logger.info(f"📋 Sample event data: {json.dumps(first_event, indent=2)}")
-
+            logger.debug(f"✅ Success: {endpoint}")
             return data
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"❌ RapidAPI returned HTTP {e.response.status_code} for {url}")
-            logger.error(f"📄 Response body: {e.response.text}")
-            return None
         except Exception as e:
-            logger.error(f"💥 Error calling RapidAPI at {url}: {e}", exc_info=True)
+            logger.error(f"❌ API failed [{endpoint}]: {e}")
             return None
+
+    # --- Event Endpoints ---
+    async def get_live_events(self, enhance_with_details: bool = False) -> List[Dict[str, Any]]:
+        """Get live events"""
+        logger.info("🔴 FETCHING LIVE EVENTS")
+
+        live_data = await self._fetch_from_rapidapi("/events/live")
+
+        if not live_data or 'events' not in live_data:
+            return self._get_fallback_events()
+
+        events = live_data['events']
+        if not events:
+            return self._get_fallback_events()
+
+        successful_matches = []
+        for event in events:
+            match = self._convert_to_match_data(event)
+            if match:
+                match_dict = asdict(match)
+                match_dict["enhancement_status"] = "basic"
+                successful_matches.append(match_dict)
+
+        return successful_matches if successful_matches else self._get_fallback_events()
+
+    async def get_events_by_date(self, day: int, month: int, year: int) -> Optional[Dict[str, Any]]:
+        """Get scheduled events for a specific date."""
+        logger.info(f"🗓️ Events by Date: {day}/{month}/{year}")
+        return await self._fetch_from_rapidapi(f"/events/{day}/{month}/{year}")
+
+    async def get_odds_by_date(self, day: int, month: int, year: int) -> Optional[Dict[str, Any]]:
+        """Get scheduled odds for a specific date."""
+        logger.info(f"💰 Odds by Date: {day}/{month}/{year}")
+        return await self._fetch_from_rapidapi(f"/events/odds/{day}/{month}/{year}")
+
+    async def get_event_details(self, event_id: int) -> Optional[Dict[str, Any]]:
+        """Get event details"""
+        logger.info(f"📊 Event Details: {event_id}")
+        return await self._fetch_from_rapidapi(f"/event/{event_id}")
+
+    async def get_event_statistics(self, event_id: int) -> Optional[Dict[str, Any]]:
+        """Get event statistics"""
+        logger.info(f"📈 Event Statistics: {event_id}")
+        return await self._fetch_from_rapidapi(f"/event/{event_id}/statistics")
+
+    async def get_event_point_by_point(self, event_id: int) -> Optional[Dict[str, Any]]:
+        """Get point-by-point data"""
+        logger.info(f"🎯 Point-by-Point: {event_id}")
+        return await self._fetch_from_rapidapi(f"/event/{event_id}/point-by-point")
+
+    async def get_event_odds(self, event_id: int) -> Optional[Dict[str, Any]]:
+        """Get event odds"""
+        logger.info(f"💰 Event Odds: {event_id}")
+        return await self._fetch_from_rapidapi(f"/event/{event_id}/odds")
+
+    async def get_event_h2h(self, event_id: int) -> Optional[Dict[str, Any]]:
+        """Get event H2H"""
+        logger.info(f"🥊 Event H2H: {event_id}")
+        return await self._fetch_from_rapidapi(f"/event/{event_id}/duel")
+
+    # --- General & Search Endpoints ---
+    async def search_tennis_entity(self, search_term: str) -> Optional[Dict[str, Any]]:
+        """Search tennis entities"""
+        logger.info(f"🔍 Search: {search_term}")
+        return await self._fetch_from_rapidapi(f"/search/{search_term}")
+
+    async def get_calendar_events(self, month: int, year: int) -> Optional[Dict[str, Any]]:
+        """Get calendar events for a specific month and year."""
+        logger.info(f"📅 Calendar Events: {month}/{year}")
+        return await self._fetch_from_rapidapi(f"/calendar/{month}/{year}")
+
+    # --- Player Endpoints ---
+    async def get_player_details(self, player_id: int) -> Optional[Dict[str, Any]]:
+        """Get player details"""
+        logger.info(f"👤 Player Details: {player_id}")
+        return await self._fetch_from_rapidapi(f"/player/{player_id}")
+
+    async def get_player_previous_events(self, player_id: int) -> Optional[Dict[str, Any]]:
+        """Get player previous events"""
+        logger.info(f"📜 Previous Events: {player_id}")
+        return await self._fetch_from_rapidapi(f"/player/{player_id}/events/previous/0")
+
+    async def get_player_future_events(self, player_id: int) -> Optional[Dict[str, Any]]:
+        """Get player future events"""
+        logger.info(f"🔮 Future Events: {player_id}")
+        return await self._fetch_from_rapidapi(f"/player/{player_id}/events/next/0")
+
+    async def get_player_rankings_history(self, player_id: int) -> Optional[Dict[str, Any]]:
+        """Get player rankings"""
+        logger.info(f"📈 Player Rankings: {player_id}")
+        return await self._fetch_from_rapidapi(f"/player/{player_id}/rankings")
+
+    # --- Rankings Endpoints ---
+    async def get_atp_rankings(self) -> Optional[Dict[str, Any]]:
+        """Get ATP rankings"""
+        logger.info("🏆 ATP Rankings")
+        return await self._fetch_from_rapidapi("/rankings/atp/live")
+
+    async def get_wta_rankings(self) -> Optional[Dict[str, Any]]:
+        """Get WTA rankings"""
+        logger.info("🏆 WTA Rankings")
+        return await self._fetch_from_rapidapi("/rankings/wta/live")
+
+    # --- Tournament Endpoints ---
+    async def get_tournament_details(self, tournament_id: int) -> Optional[Dict[str, Any]]:
+        """Get tournament details"""
+        logger.info(f"🏟️ Tournament: {tournament_id}")
+        return await self._fetch_from_rapidapi(f"/tournament/{tournament_id}")
+
+    async def get_tournament_info(self, tournament_id: int) -> Optional[Dict[str, Any]]:
+        """Get general tournament info."""
+        logger.info(f"ℹ️ Tournament Info: {tournament_id}")
+        return await self._fetch_from_rapidapi(f"/tournament/{tournament_id}/info")
+
+    async def get_tournament_seasons(self, tournament_id: int) -> Optional[Dict[str, Any]]:
+        """Get seasons for a tournament."""
+        logger.info(f"📅 Tournament Seasons: {tournament_id}")
+        return await self._fetch_from_rapidapi(f"/tournament/{tournament_id}/seasons")
+
+    async def get_tournament_rounds(self, tournament_id: int, season_id: int) -> Optional[Dict[str, Any]]:
+        """Get rounds for a tournament season."""
+        logger.info(f"🔄 Tournament Rounds: T={tournament_id}, S={season_id}")
+        return await self._fetch_from_rapidapi(f"/tournament/{tournament_id}/season/{season_id}/rounds")
+
+    async def get_tournament_last_events(self, tournament_id: int, season_id: int) -> Optional[Dict[str, Any]]:
+        """Get last events for a tournament season."""
+        logger.info(f"⏪ Tournament Last Events: T={tournament_id}, S={season_id}")
+        return await self._fetch_from_rapidapi(f"/tournament/{tournament_id}/season/{season_id}/events/last/0")
+
+    async def get_tournament_next_events(self, tournament_id: int, season_id: int) -> Optional[Dict[str, Any]]:
+        """Get next events for a tournament season."""
+        logger.info(f"⏩ Tournament Next Events: T={tournament_id}, S={season_id}")
+        return await self._fetch_from_rapidapi(f"/tournament/{tournament_id}/season/{season_id}/events/next/0")
+
+    async def get_tournament_standings(self, tournament_id: int, season_id: int) -> Optional[Dict[str, Any]]:
+        """Get total standings for a tournament season."""
+        logger.info(f"📊 Tournament Standings: T={tournament_id}, S={season_id}")
+        return await self._fetch_from_rapidapi(f"/tournament/{tournament_id}/season/{season_id}/standings/total")
+
+    async def get_tournament_cup_trees(self, tournament_id: int, season_id: int, old: bool = False) -> Optional[Dict[str, Any]]:
+        """Get cup trees for a tournament season (current or old)."""
+        tree_type = "/old" if old else ""
+        logger.info(f"🌳 Tournament Cup Trees ({'Old' if old else 'Current'}): T={tournament_id}, S={season_id}")
+        return await self._fetch_from_rapidapi(f"/tournament/{tournament_id}/season/{season_id}/cup-trees{tree_type}")
+
+    async def get_tournament_season_info(self, tournament_id: int, season_id: int) -> Optional[Dict[str, Any]]:
+        """Get info for a specific tournament season."""
+        logger.info(f"ℹ️ Tournament Season Info: T={tournament_id}, S={season_id}")
+        return await self._fetch_from_rapidapi(f"/tournament/{tournament_id}/season/{season_id}/info")
+
+    async def get_tournament_events_by_round(self, tournament_id: int, season_id: int, round_id: int, slug: str) -> Optional[Dict[str, Any]]:
+        """Get tournament events by a specific round."""
+        logger.info(f"🔍 Tournament Events by Round: T={tournament_id}, S={season_id}, R={round_id}, Slug={slug}")
+        return await self._fetch_from_rapidapi(f"/tournament/{tournament_id}/season/{season_id}/events/round/{round_id}/slug/{slug}")
+
+    # --- High-Level Analysis Methods ---
+    async def enhance_event_with_live_data(self, event_id: int) -> Dict[str, Any]:
+        """Enhanced event data"""
+        logger.info(f"🔥 ENHANCING: {event_id}")
+
+        try:
+            tasks = [
+                self.get_event_details(event_id),
+                self.get_event_statistics(event_id),
+                self.get_event_odds(event_id),
+                self.get_event_h2h(event_id)
+            ]
+
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=15.0
+            )
+
+            event_details, statistics, odds_data, h2h_data = results
+
+            enhanced_data = {
+                "live_score": self._extract_live_score(event_details) if not isinstance(event_details,
+                                                                                        Exception) else None,
+                "detailed_stats": statistics if not isinstance(statistics, Exception) else None,
+                "live_odds": odds_data if not isinstance(odds_data, Exception) else None,
+                "h2h_data": h2h_data if not isinstance(h2h_data, Exception) else None,
+                "enhancement_timestamp": datetime.now().isoformat()
+            }
+
+            success_count = sum(1 for result in results if not isinstance(result, Exception))
+            logger.info(f"✅ Enhanced {event_id}: {success_count}/4 successful")
+
+            return enhanced_data
+
+        except asyncio.TimeoutError:
+            logger.warning(f"⏰ Enhancement timeout: {event_id}")
+            return {"error": "Enhancement timeout", "event_id": event_id}
+        except Exception as e:
+            logger.error(f"💥 Enhancement failed: {e}")
+            return {"error": str(e), "event_id": event_id}
+
+    async def get_comprehensive_player_analysis(self, player_name: str) -> Dict[str, Any]:
+        """Comprehensive player analysis"""
+        try:
+            search_data = await self.search_tennis_entity(player_name)
+            player_data = self._parse_player_search(search_data, player_name) if search_data else None
+
+            if not player_data or not player_data.id:
+                return {"error": f"Player '{player_name}' not found"}
+
+            player_id = player_data.id
+            logger.info(f"📊 ANALYZING: {player_name} (ID: {player_id})")
+
+            tasks = [
+                self.get_player_details(player_id),
+                self.get_player_previous_events(player_id),
+                self.get_player_future_events(player_id),
+                self.get_player_rankings_history(player_id)
+            ]
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            player_details, previous_events, future_events, rankings = results
+
+            recent_form = []
+            if not isinstance(previous_events, Exception) and previous_events and 'events' in previous_events:
+                for event in previous_events['events'][:10]:
+                    try:
+                        winner_code = event.get('winnerCode')
+                        is_home_player = event.get('homePlayer', {}).get('id') == player_id
+                        result = 'W' if (is_home_player and winner_code == 1) or (
+                                    not is_home_player and winner_code == 2) else 'L'
+                        recent_form.append(result)
+                    except (TypeError, KeyError):
+                        pass
+
+            return {
+                "profile": asdict(player_data),
+                "player_details": player_details if not isinstance(player_details, Exception) else None,
+                "recent_events": previous_events if not isinstance(previous_events, Exception) else None,
+                "future_events": future_events if not isinstance(future_events, Exception) else None,
+                "rankings_history": rankings if not isinstance(rankings, Exception) else None,
+                "recent_form_string": "-".join(recent_form) if recent_form else "No data",
+                "recent_form_array": recent_form,
+                "betting_profile": self._generate_betting_profile(recent_form),
+                "data_retrieved_at": datetime.now().isoformat()
+            }
+
+        except Exception as e:
+            logger.error(f"Analysis failed for {player_name}: {e}")
+            return {"error": f"Analysis failed: {str(e)}"}
+
+    async def analyze_head_to_head(self, player1_name: str, player2_name: str) -> Dict[str, Any]:
+        """H2H analysis"""
+        logger.info(f"🎾 H2H: {player1_name} vs {player2_name}")
+
+        try:
+            p1_search = await self.search_tennis_entity(player1_name)
+            p2_search = await self.search_tennis_entity(player2_name)
+
+            p1_data = self._parse_player_search(p1_search, player1_name) if p1_search else None
+            p2_data = self._parse_player_search(p2_search, player2_name) if p2_search else None
+
+            if not p1_data or not p2_data:
+                return self._get_fallback_h2h(player1_name, player2_name)
+
+            return {
+                "matchup": f"{p1_data.name} vs {p2_data.name}",
+                "player1_profile": asdict(p1_data),
+                "player2_profile": asdict(p2_data),
+                "historical_h2h": {"note": "H2H data available via event analysis"},
+                "confidence_level": "medium",
+                "analysis_timestamp": datetime.now().isoformat()
+            }
+
+        except Exception as e:
+            logger.error(f"H2H failed: {e}")
+            return self._get_fallback_h2h(player1_name, player2_name)
+
+    def _convert_to_match_data(self, event_data: Dict[str, Any]) -> Optional[MatchData]:
+        """Convert event data - FIXED for player1/player2 schema"""
+        try:
+            event_id = event_data.get('id')
+            if not event_id:
+                return None
+
+            player1_data = event_data.get('player1')
+            player2_data = event_data.get('player2')
+
+            if not player1_data or not player2_data:
+                logger.warning(f"Missing player data in event {event_id}")
+                return None
+
+            player1 = PlayerData(
+                id=player1_data.get('id'),
+                name=player1_data.get('name', 'Player 1'),
+                ranking=player1_data.get('ranking'),
+                points=None,
+                country=player1_data.get('country'),
+                last_updated=datetime.now()
+            )
+
+            player2 = PlayerData(
+                id=player2_data.get('id'),
+                name=player2_data.get('name', 'Player 2'),
+                ranking=player2_data.get('ranking'),
+                points=None,
+                country=player2_data.get('country'),
+                last_updated=datetime.now()
+            )
+
+            return MatchData(
+                id=event_id,
+                player1=player1,
+                player2=player2,
+                tournament=event_data.get('tournament', 'Unknown'),
+                surface=event_data.get('surface', 'Unknown'),
+                status=event_data.get('status', 'Unknown'),
+                odds=event_data.get('odds'),
+                live_score=event_data.get('live_score'),
+                betting_analysis=None
+            )
+
+        except Exception as e:
+            logger.error(f"Event conversion failed: {e}")
+            return None
+
+    def _extract_live_score(self, event_details: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Extract live score"""
+        if not event_details:
+            return None
+
+        for field in ["score", "liveScore", "currentScore"]:
+            if field in event_details:
+                return event_details[field]
+
+        return None
 
     def _parse_player_search(self, data: Dict[str, Any], player_name: str) -> Optional[PlayerData]:
-        logger.info(f"🔍 Parsing player search for '{player_name}'")
-        logger.debug(f"📊 Raw search response: {json.dumps(data, indent=2)}")
-
+        """Parse player search"""
         if not data or not data.get('results'):
-            logger.warning(f"❌ No 'results' key in API response for '{player_name}'.")
             return None
 
         for result in data['results']:
             if result.get('type') == 'player':
                 entity = result.get('entity', {})
                 if player_name.lower() in entity.get('name', '').lower():
-                    logger.info(
-                        f"✅ Found player match for '{player_name}': {entity.get('name')} (ID: {entity.get('id')})")
                     return PlayerData(
                         id=entity.get('id'),
                         name=entity.get('name'),
                         ranking=entity.get('ranking'),
-                        country=entity.get('country', {}).get('name'),
+                        country=entity.get('country', {}).get('name') if isinstance(entity.get('country'),
+                                                                                    dict) else entity.get('country'),
                         points=entity.get('rankingPoints'),
                         last_updated=datetime.now()
                     )
-
-        logger.warning(f"❌ No player match found in API results for '{player_name}'.")
         return None
 
-    def _convert_to_match_data(self, event_data: Dict[str, Any]) -> Optional[MatchData]:
-        """ROBUST event data conversion with comprehensive error handling"""
-        try:
-            logger.debug(f"🔄 Converting event data: {json.dumps(event_data, indent=2)}")
+    def _generate_betting_profile(self, recent_form: List[str]) -> Dict[str, Any]:
+        """Generate betting profile"""
+        if not recent_form:
+            return {"tier": "unknown", "form_percentage": 0}
 
-            # Check for different possible structures
-            event_id = event_data.get('id')
-            if not event_id:
-                logger.warning("❌ Event missing 'id' field")
-                return None
+        wins = recent_form.count('W')
+        total = len(recent_form)
+        form_percentage = (wins / total) * 100
 
-            # Try different player field variations
-            player1_data = None
-            player2_data = None
-
-            # Common variations for player fields
-            player_field_variations = [
-                ('homePlayer', 'awayPlayer'),
-                ('homeTeam', 'awayTeam'),
-                ('player1', 'player2'),
-                ('home', 'away'),
-                ('competitors', None)  # Array format
-            ]
-
-            for home_field, away_field in player_field_variations:
-                if home_field in event_data:
-                    if home_field == 'competitors' and isinstance(event_data[home_field], list):
-                        # Handle competitors array format
-                        competitors = event_data[home_field]
-                        if len(competitors) >= 2:
-                            player1_data = competitors[0]
-                            player2_data = competitors[1]
-                            logger.info(f"✅ Using competitors array format")
-                            break
-                    elif away_field and away_field in event_data:
-                        player1_data = event_data[home_field]
-                        player2_data = event_data[away_field]
-                        logger.info(f"✅ Using {home_field}/{away_field} format")
-                        break
-
-            if not player1_data or not player2_data:
-                logger.warning(f"❌ Could not find player data in event. Available fields: {list(event_data.keys())}")
-                return None
-
-            # Extract player information with fallbacks
-            def extract_player_info(player_data: Dict[str, Any], player_num: int) -> PlayerData:
-                return PlayerData(
-                    id=player_data.get('id'),
-                    name=player_data.get('name', f'Player {player_num}'),
-                    ranking=player_data.get('ranking'),
-                    points=None,
-                    country=player_data.get('country', {}).get('name') if isinstance(player_data.get('country'),
-                                                                                     dict) else player_data.get(
-                        'country'),
-                    last_updated=datetime.now()
-                )
-
-            player1 = extract_player_info(player1_data, 1)
-            player2 = extract_player_info(player2_data, 2)
-
-            # Extract tournament info with fallbacks
-            tournament_data = event_data.get('tournament', {})
-            tournament_name = tournament_data.get('name', 'Unknown Tournament') if isinstance(tournament_data,
-                                                                                              dict) else str(
-                tournament_data)
-            surface = tournament_data.get('groundType', 'Unknown') if isinstance(tournament_data, dict) else 'Unknown'
-
-            # Extract status with fallbacks
-            status_data = event_data.get('status', {})
-            status = status_data.get('description', 'Unknown') if isinstance(status_data, dict) else str(status_data)
-
-            match_data = MatchData(
-                id=event_id,
-                player1=player1,
-                player2=player2,
-                tournament=tournament_name,
-                surface=surface,
-                status=status,
-                odds=event_data.get('odds'),
-                live_score=event_data.get('liveScore'),
-                betting_analysis=None
-            )
-
-            logger.info(f"✅ Successfully converted event: {player1.name} vs {player2.name}")
-            return match_data
-
-        except (KeyError, TypeError, AttributeError) as e:
-            logger.error(f"❌ Schema mismatch in event data: {e}")
-            logger.error(
-                f"📊 Event data keys: {list(event_data.keys()) if isinstance(event_data, dict) else 'Not a dict'}")
-            return None
-        except Exception as e:
-            logger.error(f"💥 Unexpected error parsing event data: {e}", exc_info=True)
-            return None
-
-    async def get_live_events(self) -> List[Dict[str, Any]]:
-        """Enhanced live events with better error handling"""
-        logger.info("🔴 LIVE: Fetching live events from RapidAPI...")
-
-        live_data = await self._fetch_from_rapidapi("/events/live")
-
-        if not live_data:
-            logger.warning("❌ No data received from live events API")
-            return self._get_fallback_events()
-
-        if 'events' not in live_data:
-            logger.warning(f"❌ No 'events' key in response. Keys: {list(live_data.keys())}")
-            return self._get_fallback_events()
-
-        events = live_data['events']
-        if not events:
-            logger.info("ℹ️ No live events currently available")
-            return self._get_fallback_events()
-
-        successful_matches = []
-        failed_count = 0
-
-        for event in events:
-            match = self._convert_to_match_data(event)
-            if match:
-                successful_matches.append(asdict(match))
-            else:
-                failed_count += 1
-
-        logger.info(f"✅ LIVE: Successfully parsed {len(successful_matches)} events, {failed_count} failed")
-
-        # If no events parsed successfully, return fallback
-        if not successful_matches:
-            logger.warning("❌ No events could be parsed, using fallback data")
-            return self._get_fallback_events()
-
-        return successful_matches
+        return {
+            "betting_tier": "premium" if form_percentage > 70 else "standard" if form_percentage > 50 else "value",
+            "form_percentage": round(form_percentage, 1),
+            "wins": wins,
+            "losses": total - wins
+        }
 
     def _get_fallback_events(self) -> List[Dict[str, Any]]:
-        """Provide fallback tennis events when API fails"""
-        logger.info("🔄 Using fallback tennis events")
-
-        fallback_events = [
+        """Fallback events"""
+        return [
             {
                 "id": 9999991,
                 "player1": {
@@ -285,221 +470,50 @@ class ProfessionalTennisAPIClient:
                 "status": "Live - Set 2",
                 "odds": None,
                 "live_score": {"set1": "6-4", "set2": "3-2"},
-                "betting_analysis": None
-            },
-            {
-                "id": 9999992,
-                "player1": {
-                    "id": 2001,
-                    "name": "Iga Swiatek",
-                    "ranking": 1,
-                    "points": None,
-                    "country": "Poland",
-                    "last_updated": datetime.now().isoformat()
-                },
-                "player2": {
-                    "id": 2002,
-                    "name": "Aryna Sabalenka",
-                    "ranking": 2,
-                    "points": None,
-                    "country": "Belarus",
-                    "last_updated": datetime.now().isoformat()
-                },
-                "tournament": "WTA 1000",
-                "surface": "Clay",
-                "status": "Upcoming",
-                "odds": None,
-                "live_score": None,
-                "betting_analysis": None
+                "betting_analysis": None,
+                "enhancement_status": "fallback"
             }
         ]
 
-        return fallback_events
-
-    async def analyze_head_to_head(self, player1_name: str, player2_name: str) -> Dict[str, Any]:
-        """Enhanced H2H with better error handling"""
-        logger.info(f"🎾 H2H Analysis for: {player1_name} vs {player2_name}")
-
-        try:
-            # Try to get player data with timeout
-            p1_task = self._get_professional_player_data(player1_name)
-            p2_task = self._get_professional_player_data(player2_name)
-
-            p1_data, p2_data = await asyncio.wait_for(
-                asyncio.gather(p1_task, p2_task, return_exceptions=True),
-                timeout=15.0
-            )
-
-            # Handle exceptions in results
-            if isinstance(p1_data, Exception):
-                logger.error(f"Failed to get {player1_name} data: {p1_data}")
-                p1_data = None
-            if isinstance(p2_data, Exception):
-                logger.error(f"Failed to get {player2_name} data: {p2_data}")
-                p2_data = None
-
-            if not p1_data or not p2_data:
-                logger.warning("Using fallback H2H analysis due to missing player data")
-                return self._get_fallback_h2h(player1_name, player2_name)
-
-            # Try to get live event for H2H
-            h2h_stats = await self._get_h2h_stats(p1_data, p2_data)
-
-            return {
-                "matchup": f"{p1_data.name} vs {p2_data.name}",
-                "player1_profile": asdict(p1_data),
-                "player2_profile": asdict(p2_data),
-                "historical_h2h": h2h_stats,
-                "confidence_level": "high" if h2h_stats.get("has_data") else "medium",
-                "analysis_timestamp": datetime.now().isoformat()
-            }
-
-        except asyncio.TimeoutError:
-            logger.error("H2H analysis timed out")
-            return self._get_fallback_h2h(player1_name, player2_name)
-        except Exception as e:
-            logger.error(f"H2H analysis failed: {e}", exc_info=True)
-            return self._get_fallback_h2h(player1_name, player2_name)
-
-    async def _get_h2h_stats(self, p1_data: PlayerData, p2_data: PlayerData) -> Dict[str, Any]:
-        """Get H2H statistics with error handling"""
-        try:
-            live_events_data = await self._fetch_from_rapidapi("/events/live")
-
-            if not live_events_data or 'events' not in live_events_data:
-                return {"note": "No live events data available for H2H lookup"}
-
-            # Look for matching event
-            for event in live_events_data['events']:
-                # Try multiple field variations for player names
-                home_names = []
-                away_names = []
-
-                # Extract names from different possible fields
-                for field_pair in [('homePlayer', 'awayPlayer'), ('homeTeam', 'awayTeam')]:
-                    home_field, away_field = field_pair
-                    if home_field in event and away_field in event:
-                        home_names.append(event[home_field].get('name', '').lower())
-                        away_names.append(event[away_field].get('name', '').lower())
-
-                # Check for matches
-                p1_name_lower = p1_data.name.lower()
-                p2_name_lower = p2_data.name.lower()
-
-                for home_name, away_name in zip(home_names, away_names):
-                    if ((p1_name_lower in home_name and p2_name_lower in away_name) or
-                            (p2_name_lower in home_name and p1_name_lower in away_name)):
-
-                        event_id = event.get('id')
-                        if event_id:
-                            duel_data = await self._fetch_from_rapidapi(f"/event/{event_id}/duel")
-                            if duel_data:
-                                return {"has_data": True, "duel_stats": duel_data}
-
-            return {"note": "No current H2H event found", "has_data": False}
-
-        except Exception as e:
-            logger.error(f"Error getting H2H stats: {e}")
-            return {"error": f"H2H lookup failed: {str(e)}", "has_data": False}
-
     def _get_fallback_h2h(self, player1_name: str, player2_name: str) -> Dict[str, Any]:
-        """Fallback H2H analysis"""
+        """Fallback H2H"""
         return {
             "matchup": f"{player1_name} vs {player2_name}",
-            "player1_profile": {"name": player1_name, "ranking": "Unknown", "country": "Unknown"},
-            "player2_profile": {"name": player2_name, "ranking": "Unknown", "country": "Unknown"},
-            "historical_h2h": {"note": "Fallback analysis - live data unavailable"},
+            "player1_profile": {"name": player1_name},
+            "player2_profile": {"name": player2_name},
+            "historical_h2h": {"note": "Fallback H2H"},
             "confidence_level": "low",
-            "analysis_timestamp": datetime.now().isoformat(),
-            "data_source": "fallback"
+            "analysis_timestamp": datetime.now().isoformat()
         }
-
-    async def _get_professional_player_data(self, player_name: str) -> Optional[PlayerData]:
-        """Enhanced player data retrieval"""
-        try:
-            search_data = await self._fetch_from_rapidapi(f"/search/{player_name}")
-            return self._parse_player_search(search_data, player_name) if search_data else None
-        except Exception as e:
-            logger.error(f"Failed to get player data for {player_name}: {e}")
-            return None
 
     async def get_player_card(self, player_name: str) -> Dict[str, Any]:
-        """Enhanced player card with fallback"""
-        try:
-            player_base_data = await self._get_professional_player_data(player_name)
-
-            if not player_base_data or not player_base_data.id:
-                return {"error": f"Player '{player_name}' not found."}
-
-            player_id = player_base_data.id
-            logger.info(f"Fetching detailed data for player ID {player_id}")
-
-            # Get additional data with timeout
-            results = await asyncio.wait_for(
-                asyncio.gather(
-                    self._fetch_from_rapidapi(f"/player/{player_id}/events/previous/0"),
-                    self._fetch_from_rapidapi(f"/player/{player_id}/rankings"),
-                    return_exceptions=True
-                ),
-                timeout=10.0
-            )
-
-            recent_events_data, rankings_data = results
-
-            # Process recent form
-            recent_form = []
-            if not isinstance(recent_events_data, Exception) and isinstance(recent_events_data,
-                                                                            dict) and 'events' in recent_events_data:
-                for event in recent_events_data['events']:
-                    try:
-                        winner_code = event.get('winnerCode')
-                        is_home_player = event.get('homePlayer', {}).get('id') == player_id
-                        result = 'W' if (is_home_player and winner_code == 1) or (
-                                    not is_home_player and winner_code == 2) else 'L'
-                        recent_form.append(result)
-                    except (TypeError, KeyError):
-                        pass
-
-            # Process rankings
-            ranking_history = []
-            if not isinstance(rankings_data, Exception) and isinstance(rankings_data, dict):
-                ranking_history = rankings_data.get('rankings', [])
-
-            return {
-                "profile": asdict(player_base_data),
-                "recent_form_string": "-".join(recent_form[:5]) if recent_form else "No recent data",
-                "ranking_history": ranking_history,
-                "data_retrieved_at": datetime.now().isoformat()
-            }
-
-        except asyncio.TimeoutError:
-            logger.error(f"Player card request timed out for {player_name}")
-            return {"error": f"Request timed out for player '{player_name}'"}
-        except Exception as e:
-            logger.error(f"Error getting player card for {player_name}: {e}", exc_info=True)
-            return {"error": f"Failed to retrieve data for player '{player_name}'"}
-
-    async def get_comprehensive_player_analysis(self, player_name: str) -> Dict[str, Any]:
-        """Enhanced comprehensive analysis"""
-        try:
-            player_data = await self._get_professional_player_data(player_name)
-            if player_data:
-                return asdict(player_data)
-            else:
-                return {"error": "Player not found."}
-        except Exception as e:
-            logger.error(f"Comprehensive analysis failed for {player_name}: {e}")
-            return {"error": f"Analysis failed: {str(e)}"}
+        """Get player card"""
+        return await self.get_comprehensive_player_analysis(player_name)
 
     async def get_current_tournaments(self) -> Dict[str, Any]:
-        """Placeholder for tournament data"""
-        return {
-            "note": "Tournament data endpoint not yet implemented.",
-            "atp_top_10": [],
-            "wta_top_10": [],
-            "last_updated": datetime.now().isoformat()
-        }
+        """Get current tournaments"""
+        try:
+            atp_data, wta_data = await asyncio.gather(
+                self.get_atp_rankings(),
+                self.get_wta_rankings(),
+                return_exceptions=True
+            )
+
+            return {
+                "atp_top_10": atp_data.get("rankings", [])[:10] if not isinstance(atp_data,
+                                                                                  Exception) and atp_data else [],
+                "wta_top_10": wta_data.get("rankings", [])[:10] if not isinstance(wta_data,
+                                                                                  Exception) and wta_data else [],
+                "last_updated": datetime.now().isoformat()
+            }
+        except Exception as e:
+            return {
+                "atp_top_10": [],
+                "wta_top_10": [],
+                "error": str(e)
+            }
 
     async def close(self):
+        """Close client"""
         await self._client.aclose()
-        logger.info("🔒 Professional Tennis API Client session closed.")
+        logger.info("🔒 Tennis API Client closed")

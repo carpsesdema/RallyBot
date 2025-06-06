@@ -29,7 +29,7 @@ except ImportError as e:
 
     class SettingsClass:
         LOG_LEVEL = "DEBUG"
-        LOCAL_API_SERVER_HOST = "127.0.0.1"
+        LOCAL_API_SERVER_HOST = "0.0.0.0"  # Changed to 0.0.0.0
         LOCAL_API_SERVER_PORT = 8000
         LLM_PROVIDER = "gemini"
         GOOGLE_API_KEY = "dummy_api_key_placeholder"
@@ -142,7 +142,7 @@ async def lifespan(app: FastAPI):
     lifespan_logger.info("Tennis Server Lifespan: Startup sequence initiated.")
     lifespan_logger.info(f"Log level configured to: {settings.LOG_LEVEL}")
 
-    # Create essential directories
+    # Create essential directories based on settings (works with Railway's /data volume)
     try:
         kb_path = Path(settings.KNOWLEDGE_BASE_DIR)
         vs_path = Path(settings.VECTOR_STORE_DIR)
@@ -153,7 +153,7 @@ async def lifespan(app: FastAPI):
         lifespan_logger.info(f"Ensuring VECTOR_STORE_DIR exists: {vs_path}")
         vs_path.mkdir(parents=True, exist_ok=True)
 
-        lifespan_logger.info("Essential directories created successfully.")
+        lifespan_logger.info("Essential directories are ready.")
 
     except Exception as e:
         lifespan_logger.critical(f"CRITICAL ERROR: Failed to create directories: {e}", exc_info=True)
@@ -283,28 +283,32 @@ async def root():
         "version": "1.0.0",
         "status": "operational",
         "docs": "/docs",
-        "health": "/api/tennis/health"
     }
 
 
-# Main block for running the server directly
+# Main block for running the server directly (mostly for local dev)
 if __name__ == "__main__":
     import uvicorn
 
-    port_to_use = int(os.getenv("PORT", str(settings.LOCAL_API_SERVER_PORT)))
-    host_to_use = os.getenv("HOST", settings.LOCAL_API_SERVER_HOST)
+    # Production services like Railway provide the PORT env var.
+    # Default to 8000 for local development.
+    port_to_use = int(os.getenv("PORT", settings.LOCAL_API_SERVER_PORT))
+
+    # In production, HOST should be 0.0.0.0 to accept connections from outside the container.
+    # The Procfile with gunicorn handles this, but this makes running locally more flexible.
+    host_to_use = os.getenv("HOST", "0.0.0.0")
 
     print(f"Starting Tennis Intelligence API Server...")
     print(f"Host: {host_to_use}")
     print(f"Port: {port_to_use}")
     print(f"Log Level: {settings.LOG_LEVEL}")
     print(f"LLM Provider: {getattr(settings, 'LLM_PROVIDER', 'gemini')}")
-    print("API Documentation: http://localhost:8000/docs")
+    print(f"API Documentation: http://{settings.LOCAL_API_SERVER_HOST}:{port_to_use}/docs")
 
     uvicorn.run(
         "backend.api_server:app",
         host=host_to_use,
         port=port_to_use,
-        reload=False,
+        reload=False,  # Reload should be False for production/stable testing
         log_level=settings.LOG_LEVEL.lower()
     )

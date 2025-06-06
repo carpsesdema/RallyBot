@@ -45,6 +45,13 @@ except ImportError as e:
         async def analyze_head_to_head(self, p1, p2): return {"analysis": "mock"}
         async def get_comprehensive_player_analysis(self, player): return {"analysis": "mock"}
         async def get_player_card(self, player_name: str): return {"error": "Not implemented"}
+        async def get_events_by_date(self, d, m, y): return {}
+        async def get_calendar_events(self, m, y): return {}
+        async def get_player_previous_events(self, pid): return {}
+        async def get_atp_rankings(self): return {}
+        async def get_wta_rankings(self): return {}
+        async def get_tournament_seasons(self, tid): return {}
+        async def get_tournament_rounds(self, tid, sid): return {}
         async def close(self): pass
 
 logger = logging.getLogger(__name__)
@@ -146,11 +153,138 @@ async def tennis_chat(payload: QueryRequest, request: Request):
     try:
         logger.info(f"💬 CHAT: Processing '{payload.query_text[:50]}...'")
         rag_pipeline = request.app.state.rag_pipeline
-        answer, sources = await rag_pipeline.query_with_tennis_intelligence(query_text=payload.query_text, top_k_chunks=payload.top_k_chunks, model_name_override=payload.model_name)
-        return QueryResponse(answer=answer, retrieved_chunks_details=sources)
+        answer, sources = await rag_pipeline.query_with_tennis_intelligence(
+            query_text=payload.query_text,
+            top_k_chunks=payload.top_k_chunks,
+            model_name_override=payload.model_name
+        )
+        # Determine if web search was used based on the source type
+        used_web_search = any(s.get("source_type") == "web_search" for s in sources)
+        return QueryResponse(answer=answer, retrieved_chunks_details=sources, used_web_search=used_web_search)
     except Exception as e:
         logger.error(f"Chat error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "Chat service temporarily unavailable"})
+
+# --- NEW RAW DATA ENDPOINTS ---
+
+@router.get("/events/by-date/{year}/{month}/{day}", summary="Get events scheduled for a specific date")
+async def get_events_by_date(year: int, month: int, day: int):
+    client = None
+    try:
+        logger.info(f"🗓️ EVENTS BY DATE: Fetching for {year}-{month}-{day}")
+        client = TennisAPIClient()
+        data = await client.get_events_by_date(day, month, year)
+        if not data:
+            raise HTTPException(status_code=404, detail="No events found for this date.")
+        return data
+    except Exception as e:
+        logger.error(f"Failed to get events for {year}-{month}-{day}: {e}", exc_info=True)
+        if isinstance(e, HTTPException): raise
+        raise HTTPException(status_code=500, detail="Failed to retrieve events by date.")
+    finally:
+        if client: await client.close()
+
+@router.get("/events/calendar/{year}/{month}", summary="Get the event calendar for a month")
+async def get_event_calendar(year: int, month: int):
+    client = None
+    try:
+        logger.info(f"📅 CALENDAR: Fetching for {year}-{month}")
+        client = TennisAPIClient()
+        data = await client.get_calendar_events(month, year)
+        if not data:
+            raise HTTPException(status_code=404, detail="No calendar data found for this month.")
+        return data
+    except Exception as e:
+        logger.error(f"Failed to get calendar for {year}-{month}: {e}", exc_info=True)
+        if isinstance(e, HTTPException): raise
+        raise HTTPException(status_code=500, detail="Failed to retrieve calendar data.")
+    finally:
+        if client: await client.close()
+
+@router.get("/player/{player_id}/previous-events", summary="Get a player's previous events")
+async def get_player_previous_events_handler(player_id: int):
+    client = None
+    try:
+        logger.info(f"📜 PLAYER PREVIOUS EVENTS: Fetching for player ID {player_id}")
+        client = TennisAPIClient()
+        data = await client.get_player_previous_events(player_id)
+        if not data:
+            raise HTTPException(status_code=404, detail=f"No previous events found for player ID {player_id}.")
+        return data
+    except Exception as e:
+        logger.error(f"Failed to get previous events for player {player_id}: {e}", exc_info=True)
+        if isinstance(e, HTTPException): raise
+        raise HTTPException(status_code=500, detail="Failed to retrieve player's previous events.")
+    finally:
+        if client: await client.close()
+
+@router.get("/rankings/atp", summary="Get live ATP rankings")
+async def get_atp_rankings_handler():
+    client = None
+    try:
+        logger.info(f"🏆 RANKINGS: Fetching live ATP rankings")
+        client = TennisAPIClient()
+        data = await client.get_atp_rankings()
+        if not data:
+            raise HTTPException(status_code=404, detail="Could not retrieve ATP rankings.")
+        return data
+    except Exception as e:
+        logger.error(f"Failed to get ATP rankings: {e}", exc_info=True)
+        if isinstance(e, HTTPException): raise
+        raise HTTPException(status_code=500, detail="Failed to retrieve ATP rankings.")
+    finally:
+        if client: await client.close()
+
+@router.get("/rankings/wta", summary="Get live WTA rankings")
+async def get_wta_rankings_handler():
+    client = None
+    try:
+        logger.info(f"🏆 RANKINGS: Fetching live WTA rankings")
+        client = TennisAPIClient()
+        data = await client.get_wta_rankings()
+        if not data:
+            raise HTTPException(status_code=404, detail="Could not retrieve WTA rankings.")
+        return data
+    except Exception as e:
+        logger.error(f"Failed to get WTA rankings: {e}", exc_info=True)
+        if isinstance(e, HTTPException): raise
+        raise HTTPException(status_code=500, detail="Failed to retrieve WTA rankings.")
+    finally:
+        if client: await client.close()
+
+@router.get("/tournament/{tournament_id}/seasons", summary="Get available seasons for a tournament")
+async def get_tournament_seasons_handler(tournament_id: int):
+    client = None
+    try:
+        logger.info(f"📅 TOURNAMENT SEASONS: Fetching for tournament ID {tournament_id}")
+        client = TennisAPIClient()
+        data = await client.get_tournament_seasons(tournament_id)
+        if not data:
+            raise HTTPException(status_code=404, detail=f"No seasons found for tournament ID {tournament_id}.")
+        return data
+    except Exception as e:
+        logger.error(f"Failed to get seasons for tournament {tournament_id}: {e}", exc_info=True)
+        if isinstance(e, HTTPException): raise
+        raise HTTPException(status_code=500, detail="Failed to retrieve tournament seasons.")
+    finally:
+        if client: await client.close()
+
+@router.get("/tournament/{tournament_id}/season/{season_id}/rounds", summary="Get rounds for a tournament season")
+async def get_tournament_rounds_handler(tournament_id: int, season_id: int):
+    client = None
+    try:
+        logger.info(f"🔄 TOURNAMENT ROUNDS: Fetching for T:{tournament_id}, S:{season_id}")
+        client = TennisAPIClient()
+        data = await client.get_tournament_rounds(tournament_id, season_id)
+        if not data:
+            raise HTTPException(status_code=404, detail=f"No rounds found for tournament {tournament_id}, season {season_id}.")
+        return data
+    except Exception as e:
+        logger.error(f"Failed to get rounds for tournament {tournament_id}, season {season_id}: {e}", exc_info=True)
+        if isinstance(e, HTTPException): raise
+        raise HTTPException(status_code=500, detail="Failed to retrieve tournament rounds.")
+    finally:
+        if client: await client.close()
 
 # Helper functions...
 def _get_event_tier(event: Dict[str, Any]) -> int:
