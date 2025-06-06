@@ -140,31 +140,23 @@ async def get_live_events(
 
     try:
         logger.info("🔴 LIVE: Processing live events request")
-
-        # Initialize tennis client
         client = TennisAPIClient()
-
-        # Get live events
         events = await client.get_live_events()
 
-        # Filter by tier if specified
         if min_tier:
+            # This filtering logic may need adjustment based on real tournament data structure
+            # For now, it assumes a 'tournament' key exists with a name that can be ranked.
             events = [e for e in events if _get_event_tier(e) >= _tier_to_number(min_tier)]
 
-        # Calculate response metrics
         response_time = int((datetime.now() - start_time).total_seconds() * 1000)
-
-        # Schedule background data refresh
         background_tasks.add_task(_refresh_live_data_cache)
 
         response = LiveEventsResponse(
             status="success",
             events_count=len(events),
-            events=[_sanitize_event_data(event) for event in events],
+            events=events,  # ADJUSTED: The client now returns fully formed dicts
             data_sources=_get_active_data_sources(),
-            cache_status="enabled" if hasattr(tennis_config, 'database') and getattr(tennis_config.database,
-                                                                                     'enable_caching',
-                                                                                     False) else "disabled",
+            cache_status="enabled" if hasattr(tennis_config, 'database') and getattr(tennis_config.database, 'enable_caching', False) else "disabled",
             response_time_ms=response_time
         )
 
@@ -173,14 +165,7 @@ async def get_live_events(
 
     except Exception as e:
         logger.error(f"❌ Live events failed - {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error": "Live events service temporarily unavailable",
-                "error_code": "LIVE_EVENTS_SERVICE_ERROR",
-                "retry_after": 30
-            }
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail={"error": "Live events service temporarily unavailable", "error_code": "LIVE_EVENTS_SERVICE_ERROR", "retry_after": 30})
     finally:
         if client:
             await client.close()
@@ -198,24 +183,17 @@ async def analyze_matchup(
 ):
     """Matchup analysis endpoint"""
     client = None
-
     try:
         logger.info(f"🎾 ANALYSIS: Analyzing {request.player1} vs {request.player2}")
-
-        # Initialize tennis client
         client = TennisAPIClient()
-
-        # Perform comprehensive analysis
         analysis = await client.analyze_head_to_head(request.player1, request.player2)
 
-        # Extract key insights
+        if "error" in analysis:
+             raise HTTPException(status_code=404, detail=analysis["error"])
+
         betting_opportunities = analysis.get("betting_implications", [])
-        confidence = "high"  # Default since we got analysis
-
-        # Generate recommendation
+        confidence = analysis.get("confidence_level", "low")
         recommended_action = _generate_recommendation(analysis)
-
-        # Schedule background H2H data update
         background_tasks.add_task(_update_h2h_database, request.player1, request.player2, analysis)
 
         response = MatchupAnalysisResponse(
@@ -232,14 +210,7 @@ async def analyze_matchup(
 
     except Exception as e:
         logger.error(f"❌ Matchup analysis failed - {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error": "Matchup analysis service temporarily unavailable",
-                "error_code": "MATCHUP_ANALYSIS_ERROR",
-                "players": [request.player1, request.player2]
-            }
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail={"error": "Matchup analysis service temporarily unavailable", "error_code": "MATCHUP_ANALYSIS_ERROR", "players": [request.player1, request.player2]})
     finally:
         if client:
             await client.close()
@@ -251,46 +222,27 @@ async def analyze_matchup(
     description="Comprehensive individual player analysis with betting profile"
 )
 async def analyze_player(request: PlayerAnalysisRequest):
-    """Player analysis endpoint"""
     client = None
-
     try:
         logger.info(f"👤 PLAYER: Analyzing player {request.player_name}")
-
-        # Initialize tennis client
         client = TennisAPIClient()
-
-        # Get comprehensive player analysis
         player_analysis = await client.get_comprehensive_player_analysis(request.player_name)
 
-        # Enhanced analysis based on request options
+        if "error" in player_analysis:
+            raise HTTPException(status_code=404, detail=player_analysis["error"])
+
         analysis = {
-            "player_profile": player_analysis.get("statistical_summary", {}),
-            "performance_metrics": {"matches_ytd": 25, "win_rate": 0.78, "ranking_trend": "stable"},
-            "betting_intelligence": {"betting_tier": "A", "value_plays": 12,
-                                     "roi": 0.15} if request.include_betting_profile else None,
-            "form_analysis": {"recent_form": "W-W-L-W-W", "trend": "positive",
-                              "confidence": "high"} if request.include_form else None
+            "player_profile": player_analysis, # The whole object is the profile now
+            "performance_metrics": {"matches_ytd": 25, "win_rate": 0.78, "ranking_trend": "stable"}, # These could be derived from real data later
+            "betting_intelligence": {"betting_tier": "A", "value_plays": 12, "roi": 0.15} if request.include_betting_profile else None,
+            "form_analysis": {"recent_form": "W-W-L-W-W", "trend": "positive", "confidence": "high"} if request.include_form else None
         }
 
-        return {
-            "status": "success",
-            "player": request.player_name,
-            "analysis": analysis,
-            "data_quality": 0.85,
-            "last_updated": datetime.now().isoformat()
-        }
+        return {"status": "success", "player": request.player_name, "analysis": analysis, "data_quality": 0.85, "last_updated": datetime.now().isoformat()}
 
     except Exception as e:
         logger.error(f"❌ Player analysis failed - {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error": "Player analysis service temporarily unavailable",
-                "error_code": "PLAYER_ANALYSIS_ERROR",
-                "player": request.player_name
-            }
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail={"error": "Player analysis service temporarily unavailable", "error_code": "PLAYER_ANALYSIS_ERROR", "player": request.player_name})
     finally:
         if client:
             await client.close()
@@ -306,54 +258,15 @@ async def get_configuration_status():
     """Configuration status endpoint"""
     try:
         logger.info("⚙️ CONFIG: Checking configuration status")
-
-        # Validate configuration
         validation = validate_tennis_config()
-
-        # Calculate health score
-        health_score = sum([
-            0.25 if validation["has_primary_api"] else 0,
-            0.20 if validation["has_api_credentials"] else 0,
-            0.20 if validation["intelligence_enabled"] else 0,
-            0.20 if validation["database_configured"] else 0,
-            0.15 if validation["fallback_available"] else 0
-        ])
-
-        # Build configuration summary
-        config_summary = {
-            "analysis_depth": getattr(getattr(tennis_config, 'intelligence', None), 'default_analysis_depth',
-                                      'comprehensive'),
-            "caching_enabled": getattr(getattr(tennis_config, 'database', None), 'enable_caching', True),
-            "betting_intelligence": getattr(getattr(tennis_config, 'intelligence', None), 'enable_betting_intelligence',
-                                            True),
-            "rate_limit": getattr(tennis_config, 'rate_limit_calls_per_minute', 60),
-            "timeout_seconds": getattr(tennis_config, 'request_timeout_seconds', 30),
-            "fallback_enabled": getattr(tennis_config, 'enable_fallback_data', True)
-        }
-
-        response = ConfigurationStatusResponse(
-            configuration_valid=all(validation.values()),
-            api_endpoints_configured=validation["has_primary_api"],
-            credentials_available=validation["has_api_credentials"],
-            intelligence_enabled=validation["intelligence_enabled"],
-            database_ready=validation["database_configured"],
-            fallback_available=validation["fallback_available"],
-            config_summary=config_summary,
-            health_score=health_score
-        )
-
+        health_score = sum([0.25 if validation["has_primary_api"] else 0, 0.20 if validation["has_api_credentials"] else 0, 0.20 if validation["intelligence_enabled"] else 0, 0.20 if validation["database_configured"] else 0, 0.15 if validation["fallback_available"] else 0])
+        config_summary = {"analysis_depth": getattr(getattr(tennis_config, 'intelligence', None), 'default_analysis_depth', 'comprehensive'), "caching_enabled": getattr(getattr(tennis_config, 'database', None), 'enable_caching', True), "betting_intelligence": getattr(getattr(tennis_config, 'intelligence', None), 'enable_betting_intelligence', True), "rate_limit": getattr(tennis_config, 'rate_limit_calls_per_minute', 60), "timeout_seconds": getattr(tennis_config, 'request_timeout_seconds', 30), "fallback_enabled": getattr(tennis_config, 'enable_fallback_data', True)}
+        response = ConfigurationStatusResponse(configuration_valid=all(validation.values()), api_endpoints_configured=validation["has_primary_api"], credentials_available=validation["has_api_credentials"], intelligence_enabled=validation["intelligence_enabled"], database_ready=validation["database_configured"], fallback_available=validation["fallback_available"], config_summary=config_summary, health_score=health_score)
         logger.info(f"✅ Configuration status - Health: {health_score:.2f}")
         return response
-
     except Exception as e:
         logger.error(f"❌ Configuration check failed - {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error": "Configuration status service temporarily unavailable",
-                "error_code": "CONFIG_STATUS_ERROR"
-            }
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail={"error": "Configuration status service temporarily unavailable", "error_code": "CONFIG_STATUS_ERROR"})
 
 
 @router.get(
@@ -364,33 +277,11 @@ async def get_configuration_status():
 async def health_check():
     """Health check endpoint"""
     try:
-        health_data = {
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "services": {
-                "tennis_intelligence": "operational",
-                "database": "connected" if hasattr(tennis_config, 'database') and getattr(
-                    getattr(tennis_config, 'database', None), 'enable_caching', False) else "disabled",
-                "api_endpoints": "configured",
-                "betting_intelligence": "enabled"
-            },
-            "performance": {
-                "avg_response_time_ms": 250,
-                "success_rate": 0.98,
-                "cache_hit_rate": 0.75
-            },
-            "version": "v1.0"
-        }
-
+        health_data = {"status": "healthy", "timestamp": datetime.now().isoformat(), "services": {"tennis_intelligence": "operational", "database": "connected" if hasattr(tennis_config, 'database') and getattr(getattr(tennis_config, 'database', None), 'enable_caching', False) else "disabled", "api_endpoints": "configured", "betting_intelligence": "enabled"}, "performance": {"avg_response_time_ms": 250, "success_rate": 0.98, "cache_hit_rate": 0.75}, "version": "v1.0"}
         return health_data
-
     except Exception as e:
         logger.error(f"Health check failed: {e}")
-        return {
-            "status": "degraded",
-            "timestamp": datetime.now().isoformat(),
-            "error": "Health check service experiencing issues"
-        }
+        return {"status": "degraded", "timestamp": datetime.now().isoformat(), "error": "Health check service experiencing issues"}
 
 
 @router.post(
@@ -407,138 +298,66 @@ async def tennis_chat(
     try:
         logger.info(f"💬 CHAT: Processing '{payload.query_text[:50]}...'")
 
-        # Get RAG pipeline from application state
         if not hasattr(request.app.state, 'rag_pipeline'):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Tennis intelligence service not available"
-            )
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Tennis intelligence service not available")
 
         rag_pipeline = request.app.state.rag_pipeline
 
-        # Use enhanced tennis intelligence
         if hasattr(rag_pipeline, 'query_with_tennis_intelligence'):
-            answer, sources = await rag_pipeline.query_with_tennis_intelligence(
-                query_text=payload.query_text,
-                top_k_chunks=payload.top_k_chunks,
-                model_name_override=payload.model_name
-            )
+            answer, sources = await rag_pipeline.query_with_tennis_intelligence(query_text=payload.query_text, top_k_chunks=payload.top_k_chunks, model_name_override=payload.model_name)
         else:
-            # Fallback to standard RAG
-            answer, sources = await rag_pipeline.query_with_rag(
-                query_text=payload.query_text,
-                top_k_chunks=payload.top_k_chunks,
-                model_name_override=payload.model_name
-            )
+            answer, sources = await rag_pipeline.query_with_rag(query_text=payload.query_text, top_k_chunks=payload.top_k_chunks, model_name_override=payload.model_name)
 
-        # Enhance sources with professional metadata
         enhanced_sources = [_enhance_source_metadata(source) for source in sources]
+        used_tennis_intelligence = any(source.get('source_type') == 'live_tennis_data' for source in enhanced_sources)
 
-        # Detect if tennis intelligence was used
-        used_tennis_intelligence = any(
-            source.get('source_type') == 'live_tennis_data'
-            for source in enhanced_sources
-        )
-
-        response = QueryResponse(
-            answer=answer,
-            retrieved_chunks_details=enhanced_sources,
-            used_web_search=used_tennis_intelligence
-        )
-
+        response = QueryResponse(answer=answer, retrieved_chunks_details=enhanced_sources, used_web_search=used_tennis_intelligence)
         logger.info(f"✅ CHAT: Response delivered - Tennis intelligence: {used_tennis_intelligence}")
         return response
 
     except RAGPipelineError as e:
         logger.error(f"RAG pipeline error: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error": "Tennis intelligence temporarily unavailable",
-                "error_code": "RAG_PIPELINE_ERROR"
-            }
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail={"error": "Tennis intelligence temporarily unavailable", "error_code": "RAG_PIPELINE_ERROR"})
     except Exception as e:
         logger.error(f"Chat error: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error": "Chat service temporarily unavailable",
-                "error_code": "CHAT_SERVICE_ERROR"
-            }
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail={"error": "Chat service temporarily unavailable", "error_code": "CHAT_SERVICE_ERROR"})
 
 
 # Helper functions
 def _get_event_tier(event: Dict[str, Any]) -> int:
-    """Determine event tier for filtering"""
-    tournament = event.get("tournament", "").lower()
-
-    if "grand slam" in tournament:
-        return 5
-    elif "masters" in tournament or "wta 1000" in tournament:
-        return 4
-    elif "500" in tournament:
-        return 3
-    elif "250" in tournament:
-        return 2
-    else:
-        return 1
-
+    tournament_name = event.get("tournament", "").lower()
+    if "grand slam" in tournament_name: return 5
+    if "masters" in tournament_name or "wta 1000" in tournament_name: return 4
+    if "500" in tournament_name: return 3
+    if "250" in tournament_name: return 2
+    return 1
 
 def _tier_to_number(tier: str) -> int:
-    """Convert tier string to number"""
     tier_map = {"regional": 1, "standard": 2, "professional": 3, "premier": 4, "elite": 5}
     return tier_map.get(tier.lower(), 1)
 
-
-def _sanitize_event_data(event: Dict[str, Any]) -> Dict[str, Any]:
-    """Sanitize event data for client response"""
-    sanitized = event.copy()
-    sanitized.pop("internal_id", None)
-    sanitized.pop("api_debug_info", None)
-    return sanitized
-
-
 def _get_active_data_sources() -> List[str]:
-    """Get list of currently active data sources"""
-    sources = ["tennis_client"]
-
-    if hasattr(tennis_config, 'database') and getattr(getattr(tennis_config, 'database', None), 'enable_caching',
-                                                      False):
-        sources.append("internal_database")
-
+    sources = ["tennis_client_primary", "tennis_client_rapidapi"]
+    if hasattr(tennis_config, 'database') and getattr(tennis_config.database, 'enable_caching', False):
+        sources.append("internal_database_cache")
     return sources
 
-
 def _generate_recommendation(analysis: Dict[str, Any]) -> str:
-    """Generate betting recommendation"""
-    if analysis.get("betting_implications"):
-        return f"RECOMMENDED: {analysis['betting_implications'][0]} - Monitor for value"
-    else:
-        return "MONITOR: Await better opportunities or additional data"
-
+    if analysis.get("historical_h2h", {}).get("note"):
+        return "MONITOR: Not enough live data for a strong recommendation."
+    return "RECOMMENDED: Analyze H2H data for value opportunities."
 
 def _enhance_source_metadata(source: Dict[str, Any]) -> Dict[str, Any]:
-    """Enhance source with professional metadata"""
     enhanced = source.copy()
     enhanced["professional_grade"] = True
     enhanced["validation_status"] = "verified"
     return enhanced
 
-
-# Background task functions
 async def _refresh_live_data_cache():
-    """Background task to refresh live data cache"""
     logger.info("🔄 Background: Refreshing live data cache")
 
-
 async def _update_h2h_database(player1: str, player2: str, analysis: Dict[str, Any]):
-    """Background task to update H2H database"""
     logger.info(f"💾 Background: Updating H2H database for {player1} vs {player2}")
-
 
 if __name__ == "__main__":
     print("🎾 Tennis API Handlers loaded successfully")
-    print("✅ All endpoints configured and ready")
-    print("✅ Router exported for api_server.py")
