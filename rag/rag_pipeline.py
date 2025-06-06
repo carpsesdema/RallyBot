@@ -1,3 +1,4 @@
+# rag/rag_pipeline.py
 import logging
 import re
 from pathlib import Path
@@ -8,11 +9,12 @@ try:
     from models import DocumentModel, ChunkModel
     from utils import RAGPipelineError, DocumentLoadingError, TextSplittingError, EmbeddingGenerationError, \
         LLMClientError, VectorStoreError
+    # FIXED: Import the correct class name and alias it for consistency
+    from llm_interface.tennis_api_client import ProfessionalTennisAPIClient as TennisAPIClient
     from rag.document_loader import DocumentLoader
     from rag.text_splitter import RecursiveCharacterTextSplitter as TextSplitter
     from rag.embedding_generator import EmbeddingGenerator
     from rag.vector_store import VectorStoreInterface
-    from llm_interface.tennis_api_client import TennisAPIClient
 
     if TYPE_CHECKING:
         from llm_interface.ollama_client import OllamaLLMClient

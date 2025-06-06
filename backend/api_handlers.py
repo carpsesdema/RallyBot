@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field
 
 try:
     from config import settings, tennis_config, validate_tennis_config
-    from llm_interface.tennis_api_client import TennisAPIClient
+    # FIXED: Import the correct class name and alias it for backward compatibility
+    from llm_interface.tennis_api_client import ProfessionalTennisAPIClient as TennisAPIClient
     from models import QueryRequest, QueryResponse
     from utils import RAGPipelineError
 except ImportError as e:
@@ -54,7 +55,7 @@ except ImportError as e:
         pass
 
 
-    class TennisAPIClient:
+    class TennisAPIClient: # This name is now consistent with the alias
         async def get_live_events(self):
             return []
 
@@ -541,5 +542,3 @@ if __name__ == "__main__":
     print("🎾 Tennis API Handlers loaded successfully")
     print("✅ All endpoints configured and ready")
     print("✅ Router exported for api_server.py")
-
-router = router  # Ensure the router is exported for use in api_server.py
