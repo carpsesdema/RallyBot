@@ -582,3 +582,6 @@ if __name__ == "__main__":
     print("🎾 Professional Tennis API Handlers loaded successfully")
     print("✅ Zero hardcoding - Enterprise grade configuration")
     print("✅ Professional endpoints ready for awesome clients")
+
+    # Export router for api_server.py
+    router = professional_router

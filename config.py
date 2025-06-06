@@ -232,3 +232,6 @@ if __name__ == "__main__":
     with open(template_path, "w") as f:
         f.write(generate_env_template())
     print(f"   Template saved to: {template_path}")
+
+    # Export settings for backward compatibility
+    settings = tennis_config
