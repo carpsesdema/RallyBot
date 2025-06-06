@@ -127,3 +127,5 @@ vector_store/       # Vector store indexes should generally be built, not commit
 *.sqlite3
 /tools/
 !/backend_stderr.log
+/backend_stderr.log
+/database/tennis_intelligence.db
