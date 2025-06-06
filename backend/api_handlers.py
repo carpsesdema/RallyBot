@@ -541,3 +541,5 @@ if __name__ == "__main__":
     print("🎾 Tennis API Handlers loaded successfully")
     print("✅ All endpoints configured and ready")
     print("✅ Router exported for api_server.py")
+
+router = router  # Ensure the router is exported for use in api_server.py

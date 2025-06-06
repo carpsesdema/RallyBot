@@ -213,3 +213,5 @@ if __name__ == "__main__":
     print(f"   • Database: {config.database.database_url}")
     print(f"   • Caching: {config.database.enable_caching}")
     print(f"   • Fallback Data: {config.enable_fallback_data}")
+
+    settings = tennis_config
