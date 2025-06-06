@@ -215,7 +215,8 @@ class ProfessionalTennisAPIClient:
         logger.info(f"📊 Tournament Standings: T={tournament_id}, S={season_id}")
         return await self._fetch_from_rapidapi(f"/tournament/{tournament_id}/season/{season_id}/standings/total")
 
-    async def get_tournament_cup_trees(self, tournament_id: int, season_id: int, old: bool = False) -> Optional[Dict[str, Any]]:
+    async def get_tournament_cup_trees(self, tournament_id: int, season_id: int, old: bool = False) -> Optional[
+        Dict[str, Any]]:
         """Get cup trees for a tournament season (current or old)."""
         tree_type = "/old" if old else ""
         logger.info(f"🌳 Tournament Cup Trees ({'Old' if old else 'Current'}): T={tournament_id}, S={season_id}")
@@ -226,10 +227,12 @@ class ProfessionalTennisAPIClient:
         logger.info(f"ℹ️ Tournament Season Info: T={tournament_id}, S={season_id}")
         return await self._fetch_from_rapidapi(f"/tournament/{tournament_id}/season/{season_id}/info")
 
-    async def get_tournament_events_by_round(self, tournament_id: int, season_id: int, round_id: int, slug: str) -> Optional[Dict[str, Any]]:
+    async def get_tournament_events_by_round(self, tournament_id: int, season_id: int, round_id: int, slug: str) -> \
+    Optional[Dict[str, Any]]:
         """Get tournament events by a specific round."""
         logger.info(f"🔍 Tournament Events by Round: T={tournament_id}, S={season_id}, R={round_id}, Slug={slug}")
-        return await self._fetch_from_rapidapi(f"/tournament/{tournament_id}/season/{season_id}/events/round/{round_id}/slug/{slug}")
+        return await self._fetch_from_rapidapi(
+            f"/tournament/{tournament_id}/season/{season_id}/events/round/{round_id}/slug/{slug}")
 
     # --- High-Level Analysis Methods ---
     async def enhance_event_with_live_data(self, event_id: int) -> Dict[str, Any]:
@@ -279,6 +282,7 @@ class ProfessionalTennisAPIClient:
             player_data = self._parse_player_search(search_data, player_name) if search_data else None
 
             if not player_data or not player_data.id:
+                logger.error(f"Could not find player '{player_name}' after intelligent search.")
                 return {"error": f"Player '{player_name}' not found"}
 
             player_id = player_data.id
@@ -299,9 +303,11 @@ class ProfessionalTennisAPIClient:
                 for event in previous_events['events'][:10]:
                     try:
                         winner_code = event.get('winnerCode')
-                        is_home_player = event.get('homePlayer', {}).get('id') == player_id
+                        home_player_info = event.get('homeTeam') or event.get('homePlayer')
+                        is_home_player = home_player_info.get('id') == player_id if home_player_info else False
+
                         result = 'W' if (is_home_player and winner_code == 1) or (
-                                    not is_home_player and winner_code == 2) else 'L'
+                                not is_home_player and winner_code == 2) else 'L'
                         recent_form.append(result)
                     except (TypeError, KeyError):
                         pass
@@ -319,7 +325,7 @@ class ProfessionalTennisAPIClient:
             }
 
         except Exception as e:
-            logger.error(f"Analysis failed for {player_name}: {e}")
+            logger.error(f"Analysis failed for {player_name}: {e}", exc_info=True)
             return {"error": f"Analysis failed: {str(e)}"}
 
     async def analyze_head_to_head(self, player1_name: str, player2_name: str) -> Dict[str, Any]:
@@ -346,7 +352,7 @@ class ProfessionalTennisAPIClient:
             }
 
         except Exception as e:
-            logger.error(f"H2H failed: {e}")
+            logger.error(f"H2H failed: {e}", exc_info=True)
             return self._get_fallback_h2h(player1_name, player2_name)
 
     def _convert_to_match_data(self, event_data: Dict[str, Any]) -> Optional[MatchData]:
@@ -356,11 +362,12 @@ class ProfessionalTennisAPIClient:
             if not event_id:
                 return None
 
-            player1_data = event_data.get('player1')
-            player2_data = event_data.get('player2')
+            player1_data = event_data.get('homePlayer') or event_data.get('player1')
+            player2_data = event_data.get('awayPlayer') or event_data.get('player2')
 
             if not player1_data or not player2_data:
-                logger.warning(f"Missing player data in event {event_id}")
+                # This is a common occurrence for some events; log as debug instead of warning to reduce noise.
+                logger.debug(f"Skipping event {event_id} due to missing player data.")
                 return None
 
             player1 = PlayerData(
@@ -385,16 +392,16 @@ class ProfessionalTennisAPIClient:
                 id=event_id,
                 player1=player1,
                 player2=player2,
-                tournament=event_data.get('tournament', 'Unknown'),
-                surface=event_data.get('surface', 'Unknown'),
-                status=event_data.get('status', 'Unknown'),
+                tournament=event_data.get('tournament', {}).get('name', 'Unknown Tournament'),
+                surface=event_data.get('groundType', 'Unknown'),
+                status=event_data.get('status', {}).get('description', 'Unknown'),
                 odds=event_data.get('odds'),
                 live_score=event_data.get('live_score'),
                 betting_analysis=None
             )
 
         except Exception as e:
-            logger.error(f"Event conversion failed: {e}")
+            logger.error(f"Event conversion failed for event ID {event_data.get('id', 'N/A')}: {e}", exc_info=True)
             return None
 
     def _extract_live_score(self, event_details: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -409,15 +416,23 @@ class ProfessionalTennisAPIClient:
         return None
 
     def _parse_player_search(self, data: Dict[str, Any], player_name: str) -> Optional[PlayerData]:
-        """Parse player search"""
+        """
+        Intelligently parse player search results.
+        Finds all matching players and returns the one with the highest ranking.
+        """
         if not data or not data.get('results'):
+            logger.debug(f"No search results for '{player_name}'")
             return None
 
+        found_players = []
         for result in data['results']:
             if result.get('type') == 'player':
                 entity = result.get('entity', {})
-                if player_name.lower() in entity.get('name', '').lower():
-                    return PlayerData(
+                entity_name = entity.get('name', '').lower()
+
+                # Check for substring match, e.g., 'alcaraz' in 'carlos alcaraz'
+                if player_name.lower() in entity_name:
+                    player = PlayerData(
                         id=entity.get('id'),
                         name=entity.get('name'),
                         ranking=entity.get('ranking'),
@@ -426,7 +441,20 @@ class ProfessionalTennisAPIClient:
                         points=entity.get('rankingPoints'),
                         last_updated=datetime.now()
                     )
-        return None
+                    found_players.append(player)
+
+        if not found_players:
+            logger.warning(f"No player entities found in search results for '{player_name}'.")
+            return None
+
+        # Sort by ranking (lowest number is best). Unranked players go to the end.
+        found_players.sort(key=lambda p: p.ranking if p.ranking is not None else 9999)
+
+        best_match = found_players[0]
+        logger.info(
+            f"Found {len(found_players)} potential matches for '{player_name}'. Selected best match: {best_match.name} (Ranking: {best_match.ranking})")
+
+        return best_match
 
     def _generate_betting_profile(self, recent_form: List[str]) -> Dict[str, Any]:
         """Generate betting profile"""
@@ -435,7 +463,7 @@ class ProfessionalTennisAPIClient:
 
         wins = recent_form.count('W')
         total = len(recent_form)
-        form_percentage = (wins / total) * 100
+        form_percentage = (wins / total) * 100 if total > 0 else 0
 
         return {
             "betting_tier": "premium" if form_percentage > 70 else "standard" if form_percentage > 50 else "value",
