@@ -1,4 +1,4 @@
-# llm_interface/tennis_api_client.py - FINAL, CORRECTED LIVE EVENTS
+# llm_interface/tennis_api_client.py - ADDED DEBUG LOGGING
 import httpx
 import logging
 import sqlite3
@@ -76,14 +76,25 @@ class ProfessionalTennisAPIClient:
         return None
 
     def _parse_player_search(self, data: Dict[str, Any], player_name: str) -> Optional[PlayerData]:
-        if not data or not data.get('results'): return None
+        # --- ADDED DEBUG LOGGING HERE ---
+        logger.info(f"Raw API response for '{player_name}' search: {json.dumps(data, indent=2)}")
+
+        if not data or not data.get('results'):
+            logger.warning(f"No 'results' key in API response for '{player_name}'.")
+            return None
+
         for result in data['results']:
-            if result.get('type') == 'player' and player_name.lower() in result.get('entity', {}).get('name',
-                                                                                                      '').lower():
-                entity = result['entity']
-                return PlayerData(id=entity.get('id'), name=entity.get('name'), ranking=entity.get('ranking'),
-                                  country=entity.get('country', {}).get('name'), points=entity.get('rankingPoints'),
-                                  last_updated=datetime.now())
+            if result.get('type') == 'player':
+                entity = result.get('entity', {})
+                # Making the search less strict to catch names like "Rafael Nadal" from "nadal"
+                if player_name.lower() in entity.get('name', '').lower():
+                    logger.info(
+                        f"Found player match for '{player_name}': {entity.get('name')} (ID: {entity.get('id')})")
+                    return PlayerData(id=entity.get('id'), name=entity.get('name'), ranking=entity.get('ranking'),
+                                      country=entity.get('country', {}).get('name'), points=entity.get('rankingPoints'),
+                                      last_updated=datetime.now())
+
+        logger.warning(f"No player match found in API results for '{player_name}'.")
         return None
 
     async def _get_professional_player_data(self, player_name: str) -> Optional[PlayerData]:
@@ -108,9 +119,8 @@ class ProfessionalTennisAPIClient:
             return None
 
     async def get_live_events(self) -> List[Dict[str, Any]]:
-        """FIXED: Gets live events from the RapidAPI endpoint as requested by the client."""
+        """Gets live events from the RapidAPI endpoint as requested by the client."""
         logger.info("🔴 LIVE: Fetching live events from RapidAPI...")
-        # This now points to the correct endpoint provided by the client
         live_data = await self._fetch_from_rapidapi("/events/live")
         if live_data and 'events' in live_data:
             matches = [asdict(match) for event in live_data['events'] if (match := self._convert_to_match_data(event))]
@@ -128,7 +138,6 @@ class ProfessionalTennisAPIClient:
             if not p1_data or not p2_data: raise ValueError("Could not retrieve API data for one or both players.")
 
             event_id = None
-            # FIXED: Also use RapidAPI to find the live event for H2H
             live_events_data = await self._fetch_from_rapidapi("/events/live")
             if live_events_data and 'events' in live_events_data:
                 for event in live_events_data['events']:
@@ -175,7 +184,7 @@ class ProfessionalTennisAPIClient:
                     winner_code = event.get('winnerCode')
                     is_home_player = event.get('homePlayer', {}).get('id') == player_id
                     result = 'W' if (is_home_player and winner_code == 1) or (
-                                not is_home_player and winner_code == 2) else 'L'
+                            not is_home_player and winner_code == 2) else 'L'
                     recent_form.append(result)
                 except (TypeError, KeyError):
                     pass
