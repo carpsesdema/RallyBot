@@ -1,4 +1,4 @@
-# llm_interface/tennis_api_client.py - FINAL, ROBUST VERSION
+# llm_interface/tennis_api_client.py - FINAL, CORRECTED LIVE EVENTS
 import httpx
 import logging
 import sqlite3
@@ -16,19 +16,9 @@ except ImportError:
     # Fallback if config not available
     class MockTennisAPIConfig:
         def __init__(self):
-            self.endpoints = type('obj', (), {'primary_live_api': 'https://api.edgeai.pro/api/tennis',
-                                              'rapidapi_base': 'https://tennisapi1.p.rapidapi.com/api/tennis',
-                                              'backup_endpoints': []})()
-            self.credentials = type('obj', (), {'rapidapi_key': None, 'rapidapi_host': 'tennisapi1.p.rapidapi.com',
-                                                'edgeai_key': None})()
-            self.intelligence = type('obj', (),
-                                     {'enable_betting_intelligence': True, 'default_analysis_depth': 'comprehensive'})()
-            self.database = type('obj', (), {'database_url': 'sqlite:///tennis_intelligence.db', 'enable_caching': True,
-                                             'cache_duration_minutes': 30})()
+            self.endpoints = type('obj', (), {'rapidapi_base': 'https://tennisapi1.p.rapidapi.com/api/tennis'})()
+            self.credentials = type('obj', (), {'rapidapi_key': None, 'rapidapi_host': 'tennisapi1.p.rapidapi.com'})()
             self.request_timeout_seconds = 30
-            self.max_retries = 3
-            self.rate_limit_calls_per_minute = 60
-            self.enable_fallback_data = True
 
 
     tennis_config = MockTennisAPIConfig()
@@ -60,65 +50,27 @@ class MatchData:
     betting_analysis: Optional[Dict[str, Any]]
 
 
-class TennisDataManager:
-    def __init__(self, config: TennisAPIConfig):
-        self.config = config
-        db_url = getattr(config.database, 'database_url', 'sqlite:///tennis_intelligence.db')
-        self.db_path = self._extract_db_path(db_url)
-
-    def _extract_db_path(self, database_url: str) -> str:
-        return database_url.replace("sqlite:///", "") if database_url.startswith(
-            "sqlite:///") else "tennis_intelligence.db"
-
-    @asynccontextmanager
-    async def get_db_connection(self):
-        conn = None
-        try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            yield conn
-        except sqlite3.Error as e:
-            logger.error(f"Database error: {e}")
-            raise
-        finally:
-            if conn: conn.close()
-
-
 class ProfessionalTennisAPIClient:
     def __init__(self, config: Optional[TennisAPIConfig] = None):
         self.config = config or tennis_config
         self._client = httpx.AsyncClient(timeout=self.config.request_timeout_seconds)
-        logger.info("Professional Tennis API Client initialized.")
-
-    async def _fetch_from_primary_api(self, endpoint: str) -> Optional[Dict[str, Any]]:
-        """
-        MODIFIED: Calls the primary API endpoint without any authentication headers,
-        assuming it is a public endpoint as per client's feedback.
-        """
-        url = f"{self.config.endpoints.primary_live_api.rstrip('/')}{endpoint}"
-        logger.info(f"Calling Primary API (as public): GET {url}")
-
-        try:
-            # Making the call with NO headers
-            response = await self._client.get(url)
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Primary API returned HTTP {e.response.status_code} for {url}: {e.response.text}")
-        except Exception as e:
-            logger.error(f"Error calling Primary API at {url}: {e}", exc_info=True)
-        return None
+        logger.info("Professional Tennis API Client initialized to use RapidAPI as the primary source.")
 
     async def _fetch_from_rapidapi(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Optional[
         Dict[str, Any]]:
-        if not self.config.credentials.rapidapi_key: return None
+        if not self.config.credentials.rapidapi_key:
+            logger.error("RapidAPI key is not configured. Cannot make API calls.")
+            return None
         headers = {'X-RapidAPI-Key': self.config.credentials.rapidapi_key,
                    'X-RapidAPI-Host': self.config.credentials.rapidapi_host}
         url = f"{self.config.endpoints.rapidapi_base}{endpoint}"
         try:
+            logger.info(f"Calling RapidAPI: GET {url}")
             response = await self._client.get(url, headers=headers, params=params)
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"RapidAPI returned HTTP {e.response.status_code} for {url}: {e.response.text}")
         except Exception as e:
             logger.error(f"Error calling RapidAPI at {url}: {e}", exc_info=True)
         return None
@@ -129,7 +81,6 @@ class ProfessionalTennisAPIClient:
             if result.get('type') == 'player' and player_name.lower() in result.get('entity', {}).get('name',
                                                                                                       '').lower():
                 entity = result['entity']
-                logger.info(f"Found player match for '{player_name}': {entity.get('name')}")
                 return PlayerData(id=entity.get('id'), name=entity.get('name'), ranking=entity.get('ranking'),
                                   country=entity.get('country', {}).get('name'), points=entity.get('rankingPoints'),
                                   last_updated=datetime.now())
@@ -157,13 +108,16 @@ class ProfessionalTennisAPIClient:
             return None
 
     async def get_live_events(self) -> List[Dict[str, Any]]:
-        logger.info("🔴 LIVE: Fetching live events from primary API (assuming public access)...")
-        live_data = await self._fetch_from_primary_api("/events/live")
+        """FIXED: Gets live events from the RapidAPI endpoint as requested by the client."""
+        logger.info("🔴 LIVE: Fetching live events from RapidAPI...")
+        # This now points to the correct endpoint provided by the client
+        live_data = await self._fetch_from_rapidapi("/events/live")
         if live_data and 'events' in live_data:
             matches = [asdict(match) for event in live_data['events'] if (match := self._convert_to_match_data(event))]
-            logger.info(f"✅ LIVE: Retrieved and parsed {len(matches)} live events.")
+            logger.info(f"✅ LIVE: Retrieved and parsed {len(matches)} live events from RapidAPI.")
             return matches
-        logger.warning("Could not retrieve live events. The API might have no live matches, or there was an error.")
+        logger.warning(
+            "Could not retrieve live events from RapidAPI. The API might have no live matches, or there was an error.")
         return []
 
     async def analyze_head_to_head(self, player1_name: str, player2_name: str) -> Dict[str, Any]:
@@ -174,7 +128,8 @@ class ProfessionalTennisAPIClient:
             if not p1_data or not p2_data: raise ValueError("Could not retrieve API data for one or both players.")
 
             event_id = None
-            live_events_data = await self._fetch_from_primary_api("/events/live")
+            # FIXED: Also use RapidAPI to find the live event for H2H
+            live_events_data = await self._fetch_from_rapidapi("/events/live")
             if live_events_data and 'events' in live_events_data:
                 for event in live_events_data['events']:
                     home_name, away_name = event.get('homePlayer', {}).get('name', '').lower(), event.get('awayPlayer',
@@ -198,6 +153,37 @@ class ProfessionalTennisAPIClient:
         except Exception as e:
             logger.error(f"H2H analysis failed: {e}", exc_info=True)
             return {"error": f"An unexpected error occurred during H2H analysis: {str(e)}"}
+
+    async def get_player_card(self, player_name: str) -> Dict[str, Any]:
+        player_base_data = await self._get_professional_player_data(player_name)
+        if not player_base_data or not player_base_data.id:
+            return {"error": f"Player '{player_name}' not found."}
+
+        player_id = player_base_data.id
+        logger.info(f"Fetching recent events and rankings for player ID {player_id} concurrently.")
+        results = await asyncio.gather(
+            self._fetch_from_rapidapi(f"/player/{player_id}/events/previous/0"),
+            self._fetch_from_rapidapi(f"/player/{player_id}/rankings"),
+            return_exceptions=True
+        )
+        recent_events_data, rankings_data = results
+
+        recent_form = []
+        if isinstance(recent_events_data, dict) and 'events' in recent_events_data:
+            for event in recent_events_data['events']:
+                try:
+                    winner_code = event.get('winnerCode')
+                    is_home_player = event.get('homePlayer', {}).get('id') == player_id
+                    result = 'W' if (is_home_player and winner_code == 1) or (
+                                not is_home_player and winner_code == 2) else 'L'
+                    recent_form.append(result)
+                except (TypeError, KeyError):
+                    pass
+
+        ranking_history = rankings_data.get('rankings', []) if isinstance(rankings_data, dict) else []
+
+        return {"profile": asdict(player_base_data), "recent_form_string": "-".join(recent_form[:5]),
+                "ranking_history": ranking_history, "data_retrieved_at": datetime.now().isoformat()}
 
     async def get_comprehensive_player_analysis(self, player_name: str) -> Dict[str, Any]:
         player_data = await self._get_professional_player_data(player_name)
