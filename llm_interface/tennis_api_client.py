@@ -1,4 +1,4 @@
-# llm_interface/tennis_api_client.py - CORRECTED Live Events Logic
+# llm_interface/tennis_api_client.py - FINAL, ROBUST VERSION
 import httpx
 import logging
 import sqlite3
@@ -16,11 +16,9 @@ except ImportError:
     # Fallback if config not available
     class MockTennisAPIConfig:
         def __init__(self):
-            self.endpoints = type('obj', (), {
-                'primary_live_api': 'https://api.edgeai.pro/api/tennis',
-                'rapidapi_base': 'https://tennisapi1.p.rapidapi.com/api/tennis',
-                'backup_endpoints': []
-            })()
+            self.endpoints = type('obj', (), {'primary_live_api': 'https://api.edgeai.pro/api/tennis',
+                                              'rapidapi_base': 'https://tennisapi1.p.rapidapi.com/api/tennis',
+                                              'backup_endpoints': []})()
             self.credentials = type('obj', (), {'rapidapi_key': None, 'rapidapi_host': 'tennisapi1.p.rapidapi.com',
                                                 'edgeai_key': None})()
             self.intelligence = type('obj', (),
@@ -41,7 +39,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PlayerData:
-    """Professional player data structure"""
     id: Optional[int]
     name: str
     ranking: Optional[int]
@@ -52,7 +49,6 @@ class PlayerData:
 
 @dataclass
 class MatchData:
-    """Professional match data structure"""
     id: int
     player1: PlayerData
     player2: PlayerData
@@ -65,23 +61,14 @@ class MatchData:
 
 
 class TennisDataManager:
-    """Professional tennis data management with database integration."""
-
     def __init__(self, config: TennisAPIConfig):
         self.config = config
         db_url = getattr(config.database, 'database_url', 'sqlite:///tennis_intelligence.db')
         self.db_path = self._extract_db_path(db_url)
-        self._init_database()
 
     def _extract_db_path(self, database_url: str) -> str:
-        if database_url.startswith("sqlite:///"):
-            return database_url.replace("sqlite:///", "")
-        return "tennis_intelligence.db"
-
-    def _init_database(self):
-        db_path = Path(self.db_path)
-        if not db_path.exists():
-            logger.warning(f"Database not found at {db_path}. It will be created on first connection.")
+        return database_url.replace("sqlite:///", "") if database_url.startswith(
+            "sqlite:///") else "tennis_intelligence.db"
 
     @asynccontextmanager
     async def get_db_connection(self):
@@ -91,89 +78,61 @@ class TennisDataManager:
             conn.row_factory = sqlite3.Row
             yield conn
         except sqlite3.Error as e:
-            logger.error(f"Database connection error to {self.db_path}: {e}")
+            logger.error(f"Database error: {e}")
             raise
         finally:
-            if conn:
-                conn.close()
-
-    async def get_cached_player_data(self, player_name: str) -> Optional[PlayerData]:
-        if not self.config.database.enable_caching: return None
-        try:
-            async with self.get_db_connection() as conn:
-                cursor = conn.cursor()
-                cache_cutoff = datetime.now() - timedelta(minutes=self.config.database.cache_duration_minutes)
-                cursor.execute(
-                    "SELECT * FROM players WHERE LOWER(name) = LOWER(?) AND updated_at > ? ORDER BY updated_at DESC LIMIT 1",
-                    (player_name, cache_cutoff.isoformat()))
-                row = cursor.fetchone()
-                if row:
-                    return PlayerData(id=row['api_player_id'], name=row['name'], ranking=None, points=None,
-                                      country=row['country_code'],
-                                      last_updated=datetime.fromisoformat(row['updated_at']))
-        except Exception as e:
-            logger.warning(f"Cache lookup failed for {player_name}: {e}")
-        return None
+            if conn: conn.close()
 
 
 class ProfessionalTennisAPIClient:
-    """Professional Tennis API Client - Corrected Live Events & H2H Logic"""
-
     def __init__(self, config: Optional[TennisAPIConfig] = None):
         self.config = config or tennis_config
-        self.data_manager = TennisDataManager(self.config)
         self._client = httpx.AsyncClient(timeout=self.config.request_timeout_seconds)
-        self._api_call_count = 0
-        self._last_reset = datetime.now()
-        logger.info(f"Professional Tennis API Client initialized.")
+        logger.info("Professional Tennis API Client initialized.")
 
     async def _fetch_from_primary_api(self, endpoint: str) -> Optional[Dict[str, Any]]:
-        """Generic and robust fetcher for the primary EdgeAI API."""
+        """
+        MODIFIED: Calls the primary API endpoint without any authentication headers,
+        assuming it is a public endpoint as per client's feedback.
+        """
         url = f"{self.config.endpoints.primary_live_api.rstrip('/')}{endpoint}"
-        logger.info(f"Calling Primary API: GET {url}")
+        logger.info(f"Calling Primary API (as public): GET {url}")
+
         try:
+            # Making the call with NO headers
             response = await self._client.get(url)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
-            logger.error(f"Primary API returned error {e.response.status_code} for {url}: {e.response.text}")
-        except httpx.RequestError as e:
-            logger.error(f"Network error calling Primary API at {url}: {e}")
+            logger.error(f"Primary API returned HTTP {e.response.status_code} for {url}: {e.response.text}")
+        except Exception as e:
+            logger.error(f"Error calling Primary API at {url}: {e}", exc_info=True)
         return None
 
     async def _fetch_from_rapidapi(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Optional[
         Dict[str, Any]]:
-        """Generic and robust fetcher for all RapidAPI endpoints."""
-        if not self.config.credentials.rapidapi_key:
-            logger.warning("RapidAPI key not configured. Cannot make the call.")
-            return None
-
+        if not self.config.credentials.rapidapi_key: return None
         headers = {'X-RapidAPI-Key': self.config.credentials.rapidapi_key,
                    'X-RapidAPI-Host': self.config.credentials.rapidapi_host}
         url = f"{self.config.endpoints.rapidapi_base}{endpoint}"
-
         try:
-            logger.debug(f"Calling RapidAPI: GET {url} with params: {params}")
             response = await self._client.get(url, headers=headers, params=params)
             response.raise_for_status()
             return response.json()
-        except httpx.HTTPStatusError as e:
-            logger.error(f"RapidAPI returned error {e.response.status_code} for {url}: {e.response.text}")
-        except httpx.RequestError as e:
-            logger.error(f"Network error calling RapidAPI at {url}: {e}")
+        except Exception as e:
+            logger.error(f"Error calling RapidAPI at {url}: {e}", exc_info=True)
         return None
 
     def _parse_player_search(self, data: Dict[str, Any], player_name: str) -> Optional[PlayerData]:
-        if not data.get('results'): return None
+        if not data or not data.get('results'): return None
         for result in data['results']:
-            if result.get('type') == 'player':
-                entity = result.get('entity', {})
-                if player_name.lower() in entity.get('name', '').lower():
-                    logger.info(
-                        f"Found player match for '{player_name}': {entity.get('name')} (ID: {entity.get('id')})")
-                    return PlayerData(id=entity.get('id'), name=entity.get('name'), ranking=entity.get('ranking'),
-                                      country=entity.get('country', {}).get('name'), points=entity.get('rankingPoints'),
-                                      last_updated=datetime.now())
+            if result.get('type') == 'player' and player_name.lower() in result.get('entity', {}).get('name',
+                                                                                                      '').lower():
+                entity = result['entity']
+                logger.info(f"Found player match for '{player_name}': {entity.get('name')}")
+                return PlayerData(id=entity.get('id'), name=entity.get('name'), ranking=entity.get('ranking'),
+                                  country=entity.get('country', {}).get('name'), points=entity.get('rankingPoints'),
+                                  last_updated=datetime.now())
         return None
 
     async def _get_professional_player_data(self, player_name: str) -> Optional[PlayerData]:
@@ -181,43 +140,37 @@ class ProfessionalTennisAPIClient:
         return self._parse_player_search(search_data, player_name) if search_data else None
 
     def _convert_to_match_data(self, event_data: Dict[str, Any]) -> Optional[MatchData]:
-        """Parses raw event JSON into a structured MatchData object."""
         try:
-            p1_data = event_data.get('homePlayer', {})
-            p2_data = event_data.get('awayPlayer', {})
-            tournament_info = event_data.get('tournament', {})
-            player1 = PlayerData(id=p1_data.get('id'), name=p1_data.get('name'), ranking=p1_data.get('ranking'),
-                                 points=None, country=p1_data.get('country', {}).get('name'),
-                                 last_updated=datetime.now())
-            player2 = PlayerData(id=p2_data.get('id'), name=p2_data.get('name'), ranking=p2_data.get('ranking'),
-                                 points=None, country=p2_data.get('country', {}).get('name'),
-                                 last_updated=datetime.now())
-            return MatchData(id=event_data.get('id'), player1=player1, player2=player2,
-                             tournament=tournament_info.get('name', 'N/A'),
-                             surface=tournament_info.get('groundType', 'N/A'),
+            p1 = event_data['homePlayer']
+            p2 = event_data['awayPlayer']
+            t = event_data['tournament']
+            player1 = PlayerData(id=p1.get('id'), name=p1.get('name'), ranking=p1.get('ranking'), points=None,
+                                 country=p1.get('country', {}).get('name'), last_updated=datetime.now())
+            player2 = PlayerData(id=p2.get('id'), name=p2.get('name'), ranking=p2.get('ranking'), points=None,
+                                 country=p2.get('country', {}).get('name'), last_updated=datetime.now())
+            return MatchData(id=event_data['id'], player1=player1, player2=player2, tournament=t.get('name', 'N/A'),
+                             surface=t.get('groundType', 'N/A'),
                              status=event_data.get('status', {}).get('description', 'N/A'), odds=event_data.get('odds'),
                              live_score=event_data.get('liveScore'), betting_analysis=None)
         except (KeyError, TypeError) as e:
-            logger.error(f"Failed to parse event data due to schema mismatch: {e}. Data: {event_data}")
+            logger.error(f"Failed to parse event data due to schema mismatch: {e}.")
             return None
 
     async def get_live_events(self) -> List[Dict[str, Any]]:
-        """FIXED: Gets live events from the correct primary API endpoint."""
-        logger.info("🔴 LIVE: Fetching professional live tennis events...")
-        # According to the API docs, the correct endpoint for live events is /events/live
+        logger.info("🔴 LIVE: Fetching live events from primary API (assuming public access)...")
         live_data = await self._fetch_from_primary_api("/events/live")
         if live_data and 'events' in live_data:
             matches = [asdict(match) for event in live_data['events'] if (match := self._convert_to_match_data(event))]
-            logger.info(f"🔴 LIVE: Retrieved and parsed {len(matches)} live events.")
+            logger.info(f"✅ LIVE: Retrieved and parsed {len(matches)} live events.")
             return matches
-        logger.warning("No 'events' key found in primary API response or API call failed.")
+        logger.warning("Could not retrieve live events. The API might have no live matches, or there was an error.")
         return []
 
     async def analyze_head_to_head(self, player1_name: str, player2_name: str) -> Dict[str, Any]:
-        logger.info(f"🎾 Implementing REAL H2H Analysis for: {player1_name} vs {player2_name}")
+        logger.info(f"🎾 H2H Analysis for: {player1_name} vs {player2_name}")
         try:
-            p1_data = await self._get_professional_player_data(player1_name)
-            p2_data = await self._get_professional_player_data(player2_name)
+            p1_data, p2_data = await asyncio.gather(self._get_professional_player_data(player1_name),
+                                                    self._get_professional_player_data(player2_name))
             if not p1_data or not p2_data: raise ValueError("Could not retrieve API data for one or both players.")
 
             event_id = None
@@ -230,33 +183,28 @@ class ProfessionalTennisAPIClient:
                     if (p1_data.name.lower() in home_name and p2_data.name.lower() in away_name) or (
                             p2_data.name.lower() in home_name and p1_data.name.lower() in away_name):
                         event_id = event.get('id')
-                        logger.info(f"Found live event ID {event_id} for matchup.")
+                        logger.info(f"Found live event ID {event_id} for H2H duel.")
                         break
 
-            h2h_stats = {}
+            h2h_stats = {"note": "No live event found, so no specific H2H duel data could be retrieved."}
             if event_id:
                 duel_data = await self._fetch_from_rapidapi(f"/event/{event_id}/duel")
                 h2h_stats = duel_data if duel_data else {"error": "Failed to fetch H2H duel data from API."}
-            else:
-                h2h_stats = {"note": "No live event found, so no specific H2H duel data could be retrieved."}
 
             return {"matchup": f"{p1_data.name} vs {p2_data.name}", "player1_profile": asdict(p1_data),
                     "player2_profile": asdict(p2_data), "historical_h2h": h2h_stats,
                     "confidence_level": "high" if event_id and 'error' not in h2h_stats else "low",
                     "analysis_timestamp": datetime.now().isoformat()}
         except Exception as e:
-            logger.error(f"H2H analysis failed for {player1_name} vs {player2_name}: {e}", exc_info=True)
+            logger.error(f"H2H analysis failed: {e}", exc_info=True)
             return {"error": f"An unexpected error occurred during H2H analysis: {str(e)}"}
 
     async def get_comprehensive_player_analysis(self, player_name: str) -> Dict[str, Any]:
-        logger.info(f"👤Fetching comprehensive analysis for player: {player_name}")
         player_data = await self._get_professional_player_data(player_name)
-        if not player_data: return {"error": "Player not found or data unavailable."}
-        return asdict(player_data)
+        return asdict(player_data) if player_data else {"error": "Player not found."}
 
     async def get_current_tournaments(self) -> Dict[str, Any]:
-        logger.info("🏆 Fetching current tournament data (placeholder)...")
-        return {"note": "Tournament data endpoint not yet fully implemented."}
+        return {"note": "Tournament data endpoint not yet implemented."}
 
     async def close(self):
         await self._client.aclose()
