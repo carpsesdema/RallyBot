@@ -1,4 +1,4 @@
-# config/tennis_api_config.py - PROFESSIONAL CONFIGURATION SYSTEM
+# config.py - COMPLETE WORKING VERSION
 import os
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -146,63 +146,51 @@ def validate_tennis_config() -> Dict[str, bool]:
     return validation_results
 
 
-# Environment template for clients
-def generate_env_template() -> str:
-    """Generate environment variable template for clients"""
-    template = """
-# Tennis API Configuration - Professional Setup
-# Copy this to your .env file and configure with your API keys
+# CRITICAL: Export settings for backward compatibility with api_server.py
+settings = tennis_config
 
-# === PRIMARY API ENDPOINTS ===
-TENNIS_PRIMARY_API=https://api.edgeai.pro/api/tennis
-TENNIS_RAPIDAPI_BASE=https://tennisapi1.p.rapidapi.com/api/tennis
-TENNIS_SPORTSDATA_BASE=https://api.sportsdata.io/v3/tennis
-TENNIS_BACKUP_ENDPOINTS=https://api.backup1.com,https://api.backup2.com
 
-# === API CREDENTIALS ===
-TENNIS_RAPIDAPI_KEY=your_rapidapi_key_here
-TENNIS_RAPIDAPI_HOST=tennisapi1.p.rapidapi.com
-TENNIS_SPORTSDATA_KEY=your_sportsdata_key_here
-TENNIS_EDGEAI_KEY=your_edgeai_key_here
+# Also create old-style attributes for backward compatibility
+class Settings:
+    def __init__(self):
+        # LLM Configuration
+        self.LLM_PROVIDER = "gemini"
+        self.GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "your_gemini_api_key_here")
+        self.GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        self.GEMINI_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0.7"))
 
-# === INTELLIGENCE SETTINGS ===
-TENNIS_ANALYSIS_DEPTH=comprehensive  # basic, standard, comprehensive, elite
-TENNIS_ENABLE_LIVE_ODDS=true
-TENNIS_ENABLE_H2H=true
-TENNIS_ENABLE_FORM=true
-TENNIS_ENABLE_SURFACE=true
-TENNIS_ENABLE_BETTING=true
+        # Ollama Configuration
+        self.OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
+        self.OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "llama3")
+        self.OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
 
-# === ANALYSIS PARAMETERS ===
-TENNIS_FORM_MATCHES=10           # Number of recent matches for form analysis
-TENNIS_H2H_LIMIT=20              # Maximum H2H matches to analyze
-TENNIS_RANKING_DAYS=365          # Days of ranking history
-TENNIS_VALUE_THRESHOLD=0.05      # Minimum edge for bet recommendations (5%)
-TENNIS_RISK_TOLERANCE=medium     # low, medium, high, very_high
+        # API Server Configuration
+        self.LOCAL_API_SERVER_HOST = os.getenv("LOCAL_API_SERVER_HOST", "127.0.0.1")
+        self.LOCAL_API_SERVER_PORT = int(os.getenv("LOCAL_API_SERVER_PORT", "8000"))
+        self.REMOTE_BACKEND_URL = os.getenv("REMOTE_BACKEND_URL")
 
-# === DATABASE CONFIGURATION ===
-TENNIS_DATABASE_URL=sqlite:///tennis_intelligence.db  # or postgresql://user:pass@host/db
-TENNIS_ENABLE_CACHING=true
-TENNIS_CACHE_MINUTES=30
-TENNIS_AUTO_UPDATE=true
-TENNIS_UPDATE_HOURS=24
+        # RAG Configuration
+        self.CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
+        self.CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
+        self.EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "768"))
 
-# === API PERFORMANCE ===
-TENNIS_TIMEOUT=30                # Request timeout in seconds
-TENNIS_MAX_RETRIES=3             # Max retry attempts
-TENNIS_RATE_LIMIT=60             # Calls per minute
-TENNIS_ENABLE_FALLBACK=true      # Enable fallback data when APIs unavailable
+        # Directory Configuration
+        self.KNOWLEDGE_BASE_DIR = Path(os.getenv("KNOWLEDGE_BASE_DIR", "./kb_docs"))
+        self.VECTOR_STORE_DIR = Path(os.getenv("VECTOR_STORE_DIR", "./vector_store"))
+        self.VECTOR_STORE_PATH = self.VECTOR_STORE_DIR / "tennis_faiss.index"
+        self.VECTOR_STORE_METADATA_PATH = self.VECTOR_STORE_DIR / "tennis_faiss_metadata.pkl"
 
-# === PROFESSIONAL FEATURES ===
-TENNIS_ENABLE_ANALYTICS=true     # Enable usage analytics
-TENNIS_LOG_LEVEL=INFO            # DEBUG, INFO, WARNING, ERROR
-TENNIS_METRICS_ENABLED=true      # Enable performance metrics
-"""
-    return template
+        # Logging
+        self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+
+# Create settings instance for backward compatibility
+settings = Settings()
+
+# Also keep tennis_config available
+tennis_config = load_tennis_config()
 
 if __name__ == "__main__":
-    # Configuration testing
     print("🎾 Tennis API Configuration System")
     print("=" * 50)
 
@@ -225,13 +213,3 @@ if __name__ == "__main__":
     print(f"   • Database: {config.database.database_url}")
     print(f"   • Caching: {config.database.enable_caching}")
     print(f"   • Fallback Data: {config.enable_fallback_data}")
-
-    # Generate environment template
-    print(f"\n📄 Environment template generated")
-    template_path = Path("tennis_api.env.template")
-    with open(template_path, "w") as f:
-        f.write(generate_env_template())
-    print(f"   Template saved to: {template_path}")
-
-    # Export settings for backward compatibility
-    settings = tennis_config
