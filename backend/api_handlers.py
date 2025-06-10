@@ -1,6 +1,10 @@
-# backend/api_handlers.py - FINAL, POLISHED VERSION
+# backend/api_handlers.py - COMPLETE VERSION WITH UPLOAD & INGEST
 import logging
-from fastapi import APIRouter, HTTPException, Request, status, BackgroundTasks
+import zipfile
+import tempfile
+import shutil
+from pathlib import Path
+from fastapi import APIRouter, HTTPException, Request, status, BackgroundTasks, UploadFile, File
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, Field
@@ -8,7 +12,11 @@ from pydantic import BaseModel, Field
 try:
     from config import settings, tennis_config, validate_tennis_config
     from llm_interface.tennis_api_client import ProfessionalTennisAPIClient as TennisAPIClient
-    from models import QueryRequest, QueryResponse
+    from models import (
+        QueryRequest, QueryResponse,
+        IngestDirectoryRequest, IngestDirectoryResponse,
+        AvailableModelsResponse
+    )
     from utils import RAGPipelineError
 except ImportError as e:
     print(f"Import error in API handlers: {e}")
@@ -33,29 +41,210 @@ except ImportError as e:
 
 
     class QueryRequest(BaseModel):
-        query_text: str; top_k_chunks: int = 3; model_name: Optional[str] = None
+        query_text: str;
+        top_k_chunks: int = 3;
+        model_name: Optional[str] = None
+
 
     class QueryResponse(BaseModel):
-        answer: str; retrieved_chunks_details: List[Dict[str, Any]] = []; used_web_search: bool = False
+        answer: str;
+        retrieved_chunks_details: List[Dict[str, Any]] = [];
+        used_web_search: bool = False
 
-    class RAGPipelineError(Exception): pass
+
+    class IngestDirectoryRequest(BaseModel):
+        directory_path: str
+
+
+    class IngestDirectoryResponse(BaseModel):
+        status: str;
+        documents_processed: int;
+        chunks_created: int
+
+
+    class AvailableModelsResponse(BaseModel):
+        models: List[str] = ["gemini-1.5-flash"]
+
+
+    class RAGPipelineError(Exception):
+        pass
+
 
     class TennisAPIClient:
         async def get_live_events(self): return []
+
         async def analyze_head_to_head(self, p1, p2): return {"analysis": "mock"}
+
         async def get_comprehensive_player_analysis(self, player): return {"analysis": "mock"}
+
         async def get_player_card(self, player_name: str): return {"error": "Not implemented"}
+
         async def get_events_by_date(self, d, m, y): return {}
+
         async def get_calendar_events(self, m, y): return {}
+
         async def get_player_previous_events(self, pid): return {}
+
         async def get_atp_rankings(self): return {}
+
         async def get_wta_rankings(self): return {}
+
         async def get_tournament_seasons(self, tid): return {}
+
         async def get_tournament_rounds(self, tid, sid): return {}
+
         async def close(self): pass
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/tennis", tags=["Tennis Intelligence"])
+
+# Create main router for all endpoints
+router = APIRouter()
+
+
+# ===== CORE RAG ENDPOINTS =====
+
+@router.post("/upload-kb-zip", summary="Upload knowledge base ZIP file")
+async def upload_knowledge_base_zip(file: UploadFile = File(...)):
+    """Upload and extract a ZIP file containing knowledge base documents"""
+    if not file.filename.endswith('.zip'):
+        raise HTTPException(status_code=400, detail="File must be a ZIP archive")
+
+    try:
+        logger.info(f"📦 Uploading KB ZIP: {file.filename}")
+
+        # Ensure the knowledge base directory exists
+        kb_dir = Path(settings.KNOWLEDGE_BASE_DIR)
+        kb_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create a temporary file to save the upload
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_file:
+            # Read and save the uploaded content
+            content = await file.read()
+            temp_file.write(content)
+            temp_zip_path = temp_file.name
+
+        try:
+            # Extract the ZIP file to the knowledge base directory
+            with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
+                # Clear existing files first (optional - comment out if you want to append)
+                if kb_dir.exists():
+                    for existing_file in kb_dir.iterdir():
+                        if existing_file.is_file():
+                            existing_file.unlink()
+                        elif existing_file.is_dir():
+                            shutil.rmtree(existing_file)
+
+                # Extract all files
+                zip_ref.extractall(kb_dir)
+                extracted_files = zip_ref.namelist()
+
+            logger.info(f"✅ ZIP extracted to {kb_dir}")
+            logger.info(f"📄 Extracted {len(extracted_files)} files")
+
+            return {
+                "status": "success",
+                "message": f"Successfully uploaded and extracted {file.filename}",
+                "extracted_files": len(extracted_files),
+                "kb_directory": str(kb_dir),
+                "files_extracted": extracted_files[:10]  # Show first 10 for preview
+            }
+
+        finally:
+            # Clean up the temporary file
+            Path(temp_zip_path).unlink(missing_ok=True)
+
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Invalid ZIP file")
+    except Exception as e:
+        logger.error(f"Failed to process ZIP upload: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to process ZIP file: {str(e)}")
+
+
+@router.post("/ingest", response_model=IngestDirectoryResponse, summary="Ingest documents into RAG system")
+async def ingest_documents(payload: IngestDirectoryRequest, request: Request):
+    """Ingest documents from a directory into the RAG vector store"""
+    try:
+        logger.info(f"🔄 Starting ingestion: {payload.directory_path}")
+
+        # Validate the directory exists
+        directory_path = Path(payload.directory_path)
+        if not directory_path.exists():
+            raise HTTPException(status_code=404, detail=f"Directory not found: {payload.directory_path}")
+
+        if not directory_path.is_dir():
+            raise HTTPException(status_code=400, detail=f"Path is not a directory: {payload.directory_path}")
+
+        # Get the RAG pipeline from the app state
+        rag_pipeline = request.app.state.rag_pipeline
+
+        # Perform the ingestion
+        documents_processed, chunks_created = await rag_pipeline.ingest_documents_from_directory(
+            directory_path_str=str(directory_path)
+        )
+
+        logger.info(f"✅ Ingestion complete: {documents_processed} docs, {chunks_created} chunks")
+
+        return IngestDirectoryResponse(
+            status="success",
+            documents_processed=documents_processed,
+            chunks_created=chunks_created
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ingestion failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ingestion failed: {str(e)}"
+        )
+
+
+@router.get("/models", response_model=AvailableModelsResponse, summary="Get available LLM models")
+async def get_available_models(request: Request):
+    """Get list of available models from the LLM client"""
+    try:
+        llm_client = request.app.state.llm_client
+        if hasattr(llm_client, 'list_available_models'):
+            models = await llm_client.list_available_models()
+        else:
+            # Fallback for clients that don't have this method
+            models = [settings.GEMINI_MODEL] if hasattr(settings, 'GEMINI_MODEL') else ["gemini-1.5-flash"]
+
+        return AvailableModelsResponse(models=models)
+    except Exception as e:
+        logger.error(f"Failed to get available models: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve available models")
+
+
+@router.post("/chat", response_model=QueryResponse, summary="RAG-enhanced chat with tennis intelligence")
+async def rag_chat(payload: QueryRequest, request: Request):
+    """Process a query using RAG with tennis intelligence and web search fallback"""
+    try:
+        logger.info(f"💬 RAG CHAT: Processing '{payload.query_text[:50]}...'")
+        rag_pipeline = request.app.state.rag_pipeline
+
+        # Use the enhanced tennis intelligence query method
+        answer, sources = await rag_pipeline.query_with_tennis_intelligence(
+            query_text=payload.query_text,
+            top_k_chunks=payload.top_k_chunks,
+            model_name_override=payload.model_name
+        )
+
+        # Determine if web search was used
+        used_web_search = any(s.get("source_type") == "web_search" for s in sources)
+
+        return QueryResponse(
+            answer=answer,
+            retrieved_chunks_details=sources,
+            used_web_search=used_web_search
+        )
+    except Exception as e:
+        logger.error(f"RAG chat error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Chat service error: {str(e)}")
+
+
+# ===== TENNIS INTELLIGENCE ENDPOINTS =====
 
 class LiveEventsResponse(BaseModel):
     status: str = Field(description="Response status")
@@ -65,9 +254,11 @@ class LiveEventsResponse(BaseModel):
     cache_status: str = Field(description="Cache utilization status")
     response_time_ms: int = Field(description="Response time in milliseconds")
 
+
 class MatchupAnalysisRequest(BaseModel):
     player1: str = Field(description="First player name")
     player2: str = Field(description="Second player name")
+
 
 class MatchupAnalysisResponse(BaseModel):
     status: str = Field(description="Response status")
@@ -75,11 +266,12 @@ class MatchupAnalysisResponse(BaseModel):
     analysis: Dict[str, Any] = Field(description="Analysis data")
     confidence_level: str = Field(description="Analysis confidence level")
 
+
 class PlayerAnalysisRequest(BaseModel):
     player_name: str = Field(description="Player name to analyze")
 
 
-@router.get("/player/{player_name}/profile", summary="Get comprehensive player profile")
+@router.get("/tennis/player/{player_name}/profile", summary="Get comprehensive player profile")
 async def get_player_profile(player_name: str):
     client = None
     try:
@@ -97,7 +289,7 @@ async def get_player_profile(player_name: str):
         if client: await client.close()
 
 
-@router.get("/live-events", response_model=LiveEventsResponse, summary="Get live tennis events")
+@router.get("/tennis/live-events", response_model=LiveEventsResponse, summary="Get live tennis events")
 async def get_live_events(min_tier: Optional[str] = None):
     start_time = datetime.now()
     client = None
@@ -108,22 +300,36 @@ async def get_live_events(min_tier: Optional[str] = None):
         if min_tier:
             events = [e for e in events if _get_event_tier(e) >= _tier_to_number(min_tier)]
         response_time = int((datetime.now() - start_time).total_seconds() * 1000)
-        return LiveEventsResponse(status="success", events_count=len(events), events=events, data_sources=["RapidAPI"], cache_status="enabled" if getattr(tennis_config.database, 'enable_caching', False) else "disabled", response_time_ms=response_time)
+        return LiveEventsResponse(
+            status="success",
+            events_count=len(events),
+            events=events,
+            data_sources=["RapidAPI"],
+            cache_status="enabled" if getattr(tennis_config.database, 'enable_caching', False) else "disabled",
+            response_time_ms=response_time
+        )
     except Exception as e:
         logger.error(f"❌ Live events failed - {e}", exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "Live events service temporarily unavailable"})
     finally:
         if client: await client.close()
 
-@router.post("/analyze-matchup", response_model=MatchupAnalysisResponse, summary="Head-to-head matchup analysis")
+
+@router.post("/tennis/analyze-matchup", response_model=MatchupAnalysisResponse, summary="Head-to-head matchup analysis")
 async def analyze_matchup(request: MatchupAnalysisRequest):
     client = None
     try:
         logger.info(f"🎾 ANALYSIS: Analyzing {request.player1} vs {request.player2}")
         client = TennisAPIClient()
         analysis = await client.analyze_head_to_head(request.player1, request.player2)
-        if "error" in analysis: raise HTTPException(status_code=404, detail=analysis["error"])
-        return MatchupAnalysisResponse(status="success", matchup=analysis.get("matchup", ""), analysis=analysis, confidence_level=analysis.get("confidence_level", "low"))
+        if "error" in analysis:
+            raise HTTPException(status_code=404, detail=analysis["error"])
+        return MatchupAnalysisResponse(
+            status="success",
+            matchup=analysis.get("matchup", ""),
+            analysis=analysis,
+            confidence_level=analysis.get("confidence_level", "low")
+        )
     except Exception as e:
         logger.error(f"❌ Matchup analysis failed - {e}", exc_info=True)
         if isinstance(e, HTTPException): raise
@@ -131,7 +337,8 @@ async def analyze_matchup(request: MatchupAnalysisRequest):
     finally:
         if client: await client.close()
 
-@router.post("/analyze-player", summary="Single player analysis")
+
+@router.post("/tennis/analyze-player", summary="Single player analysis")
 async def analyze_player(request: PlayerAnalysisRequest):
     client = None
     try:
@@ -148,26 +355,10 @@ async def analyze_player(request: PlayerAnalysisRequest):
     finally:
         if client: await client.close()
 
-@router.post("/chat", response_model=QueryResponse, summary="Tennis intelligence chat")
-async def tennis_chat(payload: QueryRequest, request: Request):
-    try:
-        logger.info(f"💬 CHAT: Processing '{payload.query_text[:50]}...'")
-        rag_pipeline = request.app.state.rag_pipeline
-        answer, sources = await rag_pipeline.query_with_tennis_intelligence(
-            query_text=payload.query_text,
-            top_k_chunks=payload.top_k_chunks,
-            model_name_override=payload.model_name
-        )
-        # Determine if web search was used based on the source type
-        used_web_search = any(s.get("source_type") == "web_search" for s in sources)
-        return QueryResponse(answer=answer, retrieved_chunks_details=sources, used_web_search=used_web_search)
-    except Exception as e:
-        logger.error(f"Chat error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail={"error": "Chat service temporarily unavailable"})
 
-# --- NEW RAW DATA ENDPOINTS ---
+# ===== RAW DATA ENDPOINTS =====
 
-@router.get("/events/by-date/{year}/{month}/{day}", summary="Get events scheduled for a specific date")
+@router.get("/tennis/events/by-date/{year}/{month}/{day}", summary="Get events scheduled for a specific date")
 async def get_events_by_date(year: int, month: int, day: int):
     client = None
     try:
@@ -184,7 +375,8 @@ async def get_events_by_date(year: int, month: int, day: int):
     finally:
         if client: await client.close()
 
-@router.get("/events/calendar/{year}/{month}", summary="Get the event calendar for a month")
+
+@router.get("/tennis/events/calendar/{year}/{month}", summary="Get the event calendar for a month")
 async def get_event_calendar(year: int, month: int):
     client = None
     try:
@@ -201,7 +393,8 @@ async def get_event_calendar(year: int, month: int):
     finally:
         if client: await client.close()
 
-@router.get("/player/{player_id}/previous-events", summary="Get a player's previous events")
+
+@router.get("/tennis/player/{player_id}/previous-events", summary="Get a player's previous events")
 async def get_player_previous_events_handler(player_id: int):
     client = None
     try:
@@ -218,7 +411,8 @@ async def get_player_previous_events_handler(player_id: int):
     finally:
         if client: await client.close()
 
-@router.get("/rankings/atp", summary="Get live ATP rankings")
+
+@router.get("/tennis/rankings/atp", summary="Get live ATP rankings")
 async def get_atp_rankings_handler():
     client = None
     try:
@@ -235,7 +429,8 @@ async def get_atp_rankings_handler():
     finally:
         if client: await client.close()
 
-@router.get("/rankings/wta", summary="Get live WTA rankings")
+
+@router.get("/tennis/rankings/wta", summary="Get live WTA rankings")
 async def get_wta_rankings_handler():
     client = None
     try:
@@ -252,7 +447,8 @@ async def get_wta_rankings_handler():
     finally:
         if client: await client.close()
 
-@router.get("/tournament/{tournament_id}/seasons", summary="Get available seasons for a tournament")
+
+@router.get("/tennis/tournament/{tournament_id}/seasons", summary="Get available seasons for a tournament")
 async def get_tournament_seasons_handler(tournament_id: int):
     client = None
     try:
@@ -269,7 +465,9 @@ async def get_tournament_seasons_handler(tournament_id: int):
     finally:
         if client: await client.close()
 
-@router.get("/tournament/{tournament_id}/season/{season_id}/rounds", summary="Get rounds for a tournament season")
+
+@router.get("/tennis/tournament/{tournament_id}/season/{season_id}/rounds",
+            summary="Get rounds for a tournament season")
 async def get_tournament_rounds_handler(tournament_id: int, season_id: int):
     client = None
     try:
@@ -277,7 +475,8 @@ async def get_tournament_rounds_handler(tournament_id: int, season_id: int):
         client = TennisAPIClient()
         data = await client.get_tournament_rounds(tournament_id, season_id)
         if not data:
-            raise HTTPException(status_code=404, detail=f"No rounds found for tournament {tournament_id}, season {season_id}.")
+            raise HTTPException(status_code=404,
+                                detail=f"No rounds found for tournament {tournament_id}, season {season_id}.")
         return data
     except Exception as e:
         logger.error(f"Failed to get rounds for tournament {tournament_id}, season {season_id}: {e}", exc_info=True)
@@ -286,15 +485,18 @@ async def get_tournament_rounds_handler(tournament_id: int, season_id: int):
     finally:
         if client: await client.close()
 
-# Helper functions...
+
+# ===== HELPER FUNCTIONS =====
+
 def _get_event_tier(event: Dict[str, Any]) -> int:
-    """FIXED: Correctly handles the tournament name which is a direct string."""
+    """Correctly handles the tournament name which is a direct string."""
     tournament_name = event.get("tournament", "").lower()
     if "grand slam" in tournament_name: return 5
     if "masters" in tournament_name or "wta 1000" in tournament_name: return 4
     if "500" in tournament_name: return 3
     if "250" in tournament_name: return 2
     return 1
+
 
 def _tier_to_number(tier: str) -> int:
     return {"regional": 1, "standard": 2, "professional": 3, "premier": 4, "elite": 5}.get(tier.lower(), 1)

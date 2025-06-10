@@ -1,4 +1,4 @@
-# backend/api_server.py - COMPLETE WORKING VERSION
+# backend/api_server.py - COMPLETE WORKING VERSION WITH UPLOAD & INGEST
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -283,6 +283,11 @@ async def root():
         "version": "1.0.0",
         "status": "operational",
         "docs": "/docs",
+        "available_endpoints": {
+            "core_rag": ["/api/upload-kb-zip", "/api/ingest", "/api/chat", "/api/models"],
+            "tennis_intelligence": ["/api/tennis/live-events", "/api/tennis/analyze-matchup", "/api/tennis/analyze-player"],
+            "tennis_data": ["/api/tennis/rankings/atp", "/api/tennis/rankings/wta", "/api/tennis/events/by-date/*"]
+        }
     }
 
 
@@ -304,6 +309,8 @@ if __name__ == "__main__":
     print(f"Log Level: {settings.LOG_LEVEL}")
     print(f"LLM Provider: {getattr(settings, 'LLM_PROVIDER', 'gemini')}")
     print(f"API Documentation: http://{settings.LOCAL_API_SERVER_HOST}:{port_to_use}/docs")
+    print(f"Core RAG Endpoints: /api/upload-kb-zip, /api/ingest, /api/chat, /api/models")
+    print(f"Tennis Intelligence Endpoints: /api/tennis/*")
 
     uvicorn.run(
         "backend.api_server:app",
