@@ -1,52 +1,49 @@
 # backend/background_tasks.py
+# MODIFIED: Replaced ranking updater with a more powerful live match monitor.
+
 import asyncio
 import logging
 from llm_interface.tennis_api_client import ProfessionalTennisAPIClient
-from database.db_manager import DatabaseManager  # We will create this next
+from database.db_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
 
-async def update_top_player_rankings():
+async def monitor_live_matches(rag_pipeline=None, tennis_config=None):  # Added args to match server call
     """
-    A background task that runs periodically to update rankings for top players.
+    A background task that runs periodically to fetch live and recent matches
+    and update the database with their results.
     """
+    logger.info("✅ Starting the background Tennis Match Monitor.")
     while True:
-        logger.info("BACKGROUND_TASK: Starting top player ranking update...")
+        logger.info("BACKGROUND_TASK: Waking up to check for new match data...")
         client = None
         db_manager = None
+
         try:
             client = ProfessionalTennisAPIClient()
             db_manager = DatabaseManager()
 
-            # Fetch live rankings for ATP and WTA using the public methods
-            atp_rankings = await client.get_atp_rankings()
-            wta_rankings = await client.get_wta_rankings()
+            live_events = await client.get_live_events()
 
-            top_players = []
-            if atp_rankings and "rankings" in atp_rankings:
-                top_players.extend(atp_rankings["rankings"][:20])  # Top 20 ATP
-            if wta_rankings and "rankings" in wta_rankings:
-                top_players.extend(wta_rankings["rankings"][:20])  # Top 20 WTA
-
-            if not top_players:
-                logger.warning("BACKGROUND_TASK: Could not fetch top player rankings from API.")
-                # We should still wait before retrying, so the sleep is in the finally block
+            if not live_events:
+                logger.info("BACKGROUND_TASK: No live events found at this time.")
             else:
-                logger.info(f"BACKGROUND_TASK: Fetched {len(top_players)} top players to update.")
-                # Update database for each player
-                for player_ranking_data in top_players:
-                    await db_manager.update_player_from_ranking(player_ranking_data)
-                logger.info("BACKGROUND_TASK: Top player ranking update complete.")
+                logger.info(f"BACKGROUND_TASK: Found {len(live_events)} events to process.")
+
+                for event_data in live_events:
+                    db_manager.process_match_data(event_data)
+
+                logger.info(f"BACKGROUND_TASK: Finished processing batch of {len(live_events)} events.")
 
         except Exception as e:
-            logger.error(f"BACKGROUND_TASK: Error during player ranking update: {e}", exc_info=True)
+            logger.error(f"BACKGROUND_TASK: An unexpected error occurred: {e}", exc_info=True)
+
         finally:
             if client:
                 await client.close()
             if db_manager:
                 db_manager.close()
 
-            # Wait for 1 hour before running again, even if there was an error
-            logger.info("BACKGROUND_TASK: Sleeping for 1 hour before next ranking update.")
-            await asyncio.sleep(3600)
+            logger.info("BACKGROUND_TASK: Sleeping for 10 minutes...")
+            await asyncio.sleep(600)

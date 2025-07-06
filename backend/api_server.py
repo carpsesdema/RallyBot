@@ -1,10 +1,11 @@
-# backend/api_server.py - COMPLETE WORKING VERSION WITH UPLOAD & INGEST
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pathlib import Path
 import os
+from typing import AsyncGenerator, Any
 
 try:
     from config import settings, tennis_config, validate_tennis_config
@@ -14,6 +15,7 @@ try:
         EmbeddingGenerationError, DocumentLoadingError
     )
     from backend.api_handlers import router as api_handlers_router
+    from backend.background_tasks import monitor_live_matches
     from llm_interface.gemini_client import GeminiLLMClient
     from rag.document_loader import DocumentLoader
     from rag.text_splitter import RecursiveCharacterTextSplitter
@@ -50,7 +52,7 @@ except ImportError as e:
     tennis_config = type('obj', (), {'enable_fallback_data': True})()
 
 
-    def validate_tennis_config():
+    def validate_tennis_config() -> dict[str, bool]:
         return {"has_primary_api": False}
 
 
@@ -86,7 +88,7 @@ except ImportError as e:
         pass
 
 
-    def setup_logger(name, level):
+    def setup_logger(name: str, level: str) -> logging.Logger:
         logging.basicConfig(level=level)
         return logging.getLogger(name)
 
@@ -98,15 +100,15 @@ except ImportError as e:
 
 
     @api_handlers_router.get("/health")
-    async def health():
+    async def health() -> dict[str, str]:
         return {"status": "fallback_mode", "message": "Running with dummy components"}
 
 
     # Dummy classes for missing components
     class GeminiLLMClient:
-        def __init__(self, settings): pass
+        def __init__(self, settings: Any): pass
 
-        async def close_session(self): pass
+        async def close_session(self) -> None: pass
 
 
     class DocumentLoader:
@@ -114,35 +116,53 @@ except ImportError as e:
 
 
     class RecursiveCharacterTextSplitter:
-        def __init__(self, chunk_size, chunk_overlap): pass
+        def __init__(self, chunk_size: int, chunk_overlap: int): pass
 
 
     class EmbeddingGenerator:
-        def __init__(self, llm_client): pass
+        def __init__(self, llm_client: Any): pass
 
 
     class FAISSVectorStore:
-        def __init__(self, embedding_dimension, index_file_path, metadata_file_path): pass
+        def __init__(self, embedding_dimension: int, index_file_path: Path, metadata_file_path: Path): pass
 
-        def load(self): pass
+        def load(self) -> None: pass
 
-        def save(self): pass
+        def save(self) -> None: pass
 
 
     class RAGPipeline:
-        def __init__(self, **kwargs): pass
+        def __init__(self, **kwargs: Any): pass
+
+
+    async def monitor_live_matches(rag_pipeline: RAGPipeline, config: Any) -> None:
+        pass
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """
+    Manages the application's startup and shutdown lifecycle.
+
+    During startup, it initializes logging, creates necessary directories,
+    sets up the LLM client, RAG pipeline, and starts background tasks.
+    During shutdown, it gracefully stops background tasks, saves data,
+    and closes client sessions.
+
+    Args:
+        app (FastAPI): The FastAPI application instance.
+
+    Yields:
+        None: Yields control back to the application to run.
+    """
     # Startup
     lifespan_logger = setup_logger("TennisServerLifespan", settings.LOG_LEVEL)
     lifespan_logger.info("Tennis Server Lifespan: Startup sequence initiated.")
     lifespan_logger.info(f"Log level configured to: {settings.LOG_LEVEL}")
 
-    # Create essential directories based on settings (works with Railway's /data volume)
+    # Create essential directories based on settings
     try:
         kb_path = Path(settings.KNOWLEDGE_BASE_DIR)
         vs_path = Path(settings.VECTOR_STORE_DIR)
@@ -200,11 +220,33 @@ async def lifespan(app: FastAPI):
         lifespan_logger.critical(f"Failed to initialize RAG components: {e}", exc_info=True)
         raise RAGPipelineError(f"RAG component initialization failed: {e}") from e
 
+    # Start background tasks
+    app.state.live_match_monitor_task = None
+    tennis_api_status = validate_tennis_config()
+    if tennis_api_status.get("has_primary_api"):
+        lifespan_logger.info("Primary Tennis API is configured. Starting live match monitor background task.")
+        background_task = asyncio.create_task(
+            monitor_live_matches(app.state.rag_pipeline, tennis_config)
+        )
+        app.state.live_match_monitor_task = background_task
+    else:
+        lifespan_logger.warning("Primary Tennis API not configured. Live match monitor will not be started.")
+
     lifespan_logger.info("Tennis Server Lifespan: Startup sequence complete. Application ready.")
     yield  # Application runs here
 
     # Shutdown
     lifespan_logger.info("Tennis Server Lifespan: Shutdown sequence initiated.")
+
+    if hasattr(app.state, 'live_match_monitor_task') and app.state.live_match_monitor_task:
+        lifespan_logger.info("Cancelling live match monitor background task...")
+        app.state.live_match_monitor_task.cancel()
+        try:
+            await app.state.live_match_monitor_task
+        except asyncio.CancelledError:
+            lifespan_logger.info("Live match monitor task successfully cancelled.")
+        except Exception as e:
+            lifespan_logger.error(f"Error during live match monitor task shutdown: {e}", exc_info=True)
 
     if hasattr(app.state, 'vector_store') and app.state.vector_store:
         try:
@@ -238,7 +280,20 @@ logger.info("FastAPI app instance created and API router included under /api pre
 
 # Global exception handler for custom errors
 @app.exception_handler(AvaChatError)
-async def avachat_exception_handler(request: Request, exc: AvaChatError):
+async def avachat_exception_handler(request: Request, exc: AvaChatError) -> JSONResponse:
+    """
+    Global exception handler for custom AvaChatError types.
+
+    Catches specific application errors and formats them into a standardized
+    JSON response with appropriate status codes.
+
+    Args:
+        request (Request): The incoming request that caused the error.
+        exc (AvaChatError): The caught exception instance.
+
+    Returns:
+        JSONResponse: A standardized JSON error response.
+    """
     logging.getLogger("TennisApp").error(f"Unhandled AvaChatError at API level: {exc} for request {request.url.path}",
                                          exc_info=True)
 
@@ -276,7 +331,14 @@ async def avachat_exception_handler(request: Request, exc: AvaChatError):
 
 # Root path for basic health check
 @app.get("/", include_in_schema=False)
-async def root():
+async def root() -> dict[str, Any]:
+    """
+    Provides a basic health check and welcome message at the root URL.
+
+    Returns:
+        dict: A dictionary containing a welcome message, version, status, and
+              links to documentation and available endpoints.
+    """
     logging.getLogger(__name__).info("Root path '/' accessed.")
     return {
         "message": "Welcome to the Tennis Intelligence API! Professional tennis data and analysis.",
@@ -303,14 +365,14 @@ if __name__ == "__main__":
     # The Procfile with gunicorn handles this, but this makes running locally more flexible.
     host_to_use = os.getenv("HOST", "0.0.0.0")
 
-    print(f"Starting Tennis Intelligence API Server...")
+    # Use a simple print here as logging is configured by uvicorn/gunicorn at this stage
+    print("--- Starting Tennis Intelligence API Server ---")
     print(f"Host: {host_to_use}")
     print(f"Port: {port_to_use}")
     print(f"Log Level: {settings.LOG_LEVEL}")
     print(f"LLM Provider: {getattr(settings, 'LLM_PROVIDER', 'gemini')}")
     print(f"API Documentation: http://{settings.LOCAL_API_SERVER_HOST}:{port_to_use}/docs")
-    print(f"Core RAG Endpoints: /api/upload-kb-zip, /api/ingest, /api/chat, /api/models")
-    print(f"Tennis Intelligence Endpoints: /api/tennis/*")
+    print("---------------------------------------------")
 
     uvicorn.run(
         "backend.api_server:app",
