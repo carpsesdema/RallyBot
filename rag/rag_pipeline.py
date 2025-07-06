@@ -1,4 +1,6 @@
 # rag/rag_pipeline.py
+# FIXED: Rewrote the main analysis prompts to be more direct and ask for a synthesized report.
+
 import logging
 import re
 from pathlib import Path
@@ -14,14 +16,14 @@ try:
     from rag.text_splitter import RecursiveCharacterTextSplitter as TextSplitter
     from rag.embedding_generator import EmbeddingGenerator
     from rag.vector_store import VectorStoreInterface
-    from .web_search import WebSearchFallback # NEW: Import WebSearchFallback
+    from .web_search import WebSearchFallback
 
     if TYPE_CHECKING:
         from llm_interface.ollama_client import OllamaLLMClient
         from llm_interface.gemini_client import GeminiLLMClient
 except ImportError as e:
     print(f"Import error in rag_pipeline.py: {e}. Some features might not work if run standalone.")
-    # Fallback classes remain the same...
+    # Fallback classes can be defined here if needed for standalone testing
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +42,7 @@ class RAGPipeline:
         self.text_splitter = text_splitter
         self.embedding_generator = embedding_generator
         self.vector_store = vector_store
-        self.web_searcher = WebSearchFallback()  # NEW: Initialize web searcher
+        self.web_searcher = WebSearchFallback()
         logger.info(f"RAGPipeline initialized with enhanced tennis intelligence and web search fallback.")
 
     async def ingest_documents_from_directory(self, directory_path_str: str) -> Tuple[int, int]:
@@ -84,7 +86,7 @@ class RAGPipeline:
             raise RAGPipelineError(f"Ingestion pipeline failed: {e}") from e
 
     async def query_with_rag(self, query_text: str, top_k_chunks: int = 3, model_name_override: Optional[str] = None) -> \
-    Tuple[str, List[Dict[str, Any]]]:
+            Tuple[str, List[Dict[str, Any]]]:
         """Enhanced RAG query with Google search fallback"""
         logger.info(f"Processing RAG query with fallback: '{query_text[:100]}...', top_k={top_k_chunks}")
 
@@ -296,29 +298,23 @@ Answer:"""
             logger.info(f"🎾 COMPREHENSIVE MATCHUP: {player1} vs {player2}")
             h2h_analysis = await tennis_client.analyze_head_to_head(player1, player2)
             context = self._format_comprehensive_analysis(h2h_analysis, query_text)
-            prompt = f"""You are a professional tennis betting analyst with access to comprehensive player data and statistics. Provide detailed betting insights and recommendations.
+
+            # !!! PROMPT FIX: Changed to be more direct and ask for a synthesized report.
+            prompt = f"""You are a professional tennis betting analyst. Using the comprehensive data below, synthesize a concise betting report.
+Integrate player stats, form, and styles to create a clear recommendation.
+Conclude with your top 1-2 recommended bets (e.g., Moneyline, Game Handicap) and a confidence rating.
+Do not list topics or data points; deliver the final, polished analysis directly.
 
 COMPREHENSIVE TENNIS DATA:
 {context}
 
 USER QUERY: {query_text}
 
-Provide a professional analysis including:
-1. **Head-to-Head Overview**: Current rankings, form, and key statistics
-2. **Statistical Advantages**: Serve percentages, return games, surface preferences
-3. **Recent Form Analysis**: Last 5-10 matches performance trends
-4. **Betting Implications**:
-   - Moneyline recommendation with confidence level
-   - Set betting opportunities (over/under 3.5 sets, etc.)
-   - Game handicap suggestions
-   - Prop bet values (aces, double faults, break points)
-5. **Risk Assessment**: Injury concerns, fatigue factors, motivation levels
-6. **Value Opportunities**: Market inefficiencies and contrarian plays
-7. **Recommended Bet Sizing**: Based on confidence and edge
-
-Format your response as a professional betting report with clear, actionable insights and specific bet recommendations."""
+ANALYST REPORT:"""
             answer = await self.llm_client.generate_response(prompt=prompt, model_name=model_name)
-            sources = [{"source_file": "Live Tennis Intelligence API", "chunk_id": f"h2h_{player1}_{player2}", "text_preview": f"Comprehensive H2H: {player1} vs {player2} with betting analysis", "source_type": "live_tennis_data"}]
+            sources = [{"source_file": "Live Tennis Intelligence API", "chunk_id": f"h2h_{player1}_{player2}",
+                        "text_preview": f"Comprehensive H2H: {player1} vs {player2} with betting analysis",
+                        "source_type": "live_tennis_data"}]
             return f"🎾 {answer}", sources
         except Exception as e:
             logger.error(f"Comprehensive matchup analysis failed: {e}", exc_info=True)
@@ -335,25 +331,21 @@ Format your response as a professional betting report with clear, actionable ins
             logger.info(f"🎾 SINGLE PLAYER ANALYSIS: {player_name}")
             player_analysis = await tennis_client.get_comprehensive_player_analysis(player_name)
             context = self._format_single_player_analysis(player_analysis, query_text)
-            prompt = f"""You are a professional tennis analyst. Provide comprehensive insights about this player based on current data.
+
+            # !!! PROMPT FIX: Changed to ask for a synthesized summary.
+            prompt = f"""You are a professional tennis analyst. Based on the player intelligence data below, provide a concise summary of the player's current status and betting profile.
+Focus on their playing style, recent form, and surface preferences to identify key betting angles or fantasy tennis value.
+Deliver a direct, synthesized analysis.
 
 PLAYER INTELLIGENCE DATA:
 {context}
 
 USER QUERY: {query_text}
 
-Provide analysis covering:
-1. **Current Form & Ranking**: Position, recent trajectory, points
-2. **Playing Style & Strengths**: Technical analysis and tactical preferences
-3. **Surface Performance**: Clay, grass, hard court win rates and preferences
-4. **Recent Match Analysis**: Form trends, notable wins/losses
-5. **Betting Profile**: Reliability as favorite/underdog, value patterns
-6. **Upcoming Opportunities**: Tournament schedule and betting angles
-7. **Long-term Outlook**: Career trajectory and investment potential
-
-Focus on actionable insights for betting and fantasy tennis applications."""
+ANALYST SUMMARY:"""
             answer = await self.llm_client.generate_response(prompt=prompt, model_name=model_name)
-            sources = [{"source_file": "Player Intelligence Database", "chunk_id": f"player_{player_name}", "text_preview": f"Comprehensive analysis: {player_name}", "source_type": "live_tennis_data"}]
+            sources = [{"source_file": "Player Intelligence Database", "chunk_id": f"player_{player_name}",
+                        "text_preview": f"Comprehensive analysis: {player_name}", "source_type": "live_tennis_data"}]
             return f"🎾 {answer}", sources
         except Exception as e:
             logger.error(f"Single player analysis failed: {e}", exc_info=True)
@@ -377,23 +369,21 @@ MARKET CONTEXT:
 - Data last updated: {tournament_data.get('last_updated', 'Unknown')}
 - Analysis type: General tennis market overview
 """
-            prompt = f"""You are a tennis market analyst. Provide insights about the current tennis landscape and betting opportunities.
+            # !!! PROMPT FIX: Changed to ask for a brief summary and key insights.
+            prompt = f"""You are a tennis market analyst. Using the market overview data, provide a brief summary of the current tennis landscape.
+Highlight 1-2 key market insights, such as emerging players with value or overvalued favorites.
+Focus on actionable intelligence for betting strategies.
 
+MARKET OVERVIEW DATA:
 {context}
 
 USER QUERY: {query_text}
 
-Provide analysis covering:
-1. **Current Market Leaders**: Top players and their dominance patterns
-2. **Emerging Threats**: Rising players creating betting value
-3. **Tournament Outlook**: Upcoming events and betting angles
-4. **Market Inefficiencies**: Overvalued/undervalued players
-5. **Seasonal Trends**: Surface transitions and performance patterns
-6. **Betting Strategies**: Current profitable approaches and angles
-
-Focus on actionable market insights and betting opportunities."""
+MARKET INSIGHTS:"""
             answer = await self.llm_client.generate_response(prompt=prompt, model_name=model_name)
-            sources = [{"source_file": "Tennis Market Intelligence", "chunk_id": "market_overview", "text_preview": "Current tennis market analysis and betting opportunities", "source_type": "live_tennis_data"}]
+            sources = [{"source_file": "Tennis Market Intelligence", "chunk_id": "market_overview",
+                        "text_preview": "Current tennis market analysis and betting opportunities",
+                        "source_type": "live_tennis_data"}]
             return f"🎾 {answer}", sources
         except Exception as e:
             logger.error(f"Tennis market analysis failed: {e}", exc_info=True)

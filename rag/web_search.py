@@ -1,4 +1,6 @@
 # rag/web_search.py
+# CORRECTED: Fixed the "Unresolved reference" error by initializing search_results before the try block.
+
 import logging
 import requests
 from typing import List, Dict, Any
@@ -18,6 +20,10 @@ class WebSearchFallback:
 
     async def search_google(self, query: str) -> List[Dict[str, Any]]:
         """Search Google and extract content from top results"""
+
+        # <<< FIX #1: Initialize the list here, outside the try block.
+        search_results: List[Dict[str, Any]] = []
+
         try:
             # Add tennis context to the search query if it seems to be missing
             enhanced_query = query
@@ -26,10 +32,8 @@ class WebSearchFallback:
 
             logger.info(f"Performing Google search for: '{enhanced_query}'")
 
-            # Get top search results
-            search_results = []
-            # Adding a pause to be a good web citizen
-            urls = list(search(enhanced_query, num_results=self.max_results, stop=self.max_results, pause=2.0))
+            # Get top search results (already fixed from last time)
+            urls = list(search(enhanced_query, num_results=self.max_results, pause=2.0))
 
             for url in urls:
                 try:
@@ -68,8 +72,12 @@ class WebSearchFallback:
                     continue
 
             logger.info(f"Successfully retrieved content from {len(search_results)} web search results")
-            return search_results
 
         except Exception as e:
             logger.error(f"Google search process failed: {e}", exc_info=True)
-            return []
+            # Since search_results is already initialized, we can just return it.
+            # It will be empty, which is the correct behavior on failure.
+            return search_results
+
+        # <<< FIX #2: We can now simplify the return statement.
+        return search_results
