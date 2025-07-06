@@ -1,4 +1,3 @@
-# llm_interface/tennis_api_client.py - FIXED VERSION WITH NO ERRORS
 import httpx
 import logging
 from typing import List, Optional, Dict, Any, Tuple
@@ -79,16 +78,47 @@ class ProfessionalTennisAPIClient:
 
     # --- Event Endpoints ---
     async def get_live_events(self, enhance_with_details: bool = False) -> List[Dict[str, Any]]:
-        """Get live events"""
-        logger.info("🔴 FETCHING LIVE EVENTS")
+        """
+        Get live events from the direct EdgeAI endpoint.
 
-        live_data = await self._fetch_from_rapidapi("/events/live")
+        This method fetches live tennis match data directly from the EdgeAI API,
+        bypassing the RapidAPI helper for this specific endpoint.
+
+        Args:
+            enhance_with_details: This argument is currently unused but kept for
+                                  API consistency.
+
+        Returns:
+            A list of dictionaries, where each dictionary represents a live match.
+            Returns a fallback list if the API call fails or no live events are found.
+        """
+        logger.info("🔴 FETCHING LIVE EVENTS from EdgeAI endpoint")
+        url = "https://api.edgeai.pro/api/tennis/events/live"
+        live_data: Optional[Dict[str, Any]] = None
+
+        try:
+            logger.debug(f"📡 Direct API Call: {url}")
+            response = await self._client.get(url)
+            response.raise_for_status()  # Raises HTTPStatusError for 4xx/5xx responses
+            live_data = response.json()
+            logger.debug(f"✅ Success: {url}")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ API HTTP Error [{url}]: {e.response.status_code} - {e.response.text}")
+            return self._get_fallback_events()
+        except (httpx.RequestError, json.JSONDecodeError) as e:
+            logger.error(f"❌ API failed [{url}]: {e}")
+            return self._get_fallback_events()
+        except Exception as e:
+            logger.error(f"❌ An unexpected error occurred while fetching live events: {e}", exc_info=True)
+            return self._get_fallback_events()
 
         if not live_data or 'events' not in live_data:
+            logger.warning("Live events data is empty or malformed. Using fallback.")
             return self._get_fallback_events()
 
         events = live_data['events']
         if not events:
+            logger.info("No live events currently available. Using fallback.")
             return self._get_fallback_events()
 
         successful_matches = []
@@ -99,7 +129,11 @@ class ProfessionalTennisAPIClient:
                 match_dict["enhancement_status"] = "basic"
                 successful_matches.append(match_dict)
 
-        return successful_matches if successful_matches else self._get_fallback_events()
+        if not successful_matches:
+            logger.info("Could not convert any live events to MatchData. Using fallback.")
+            return self._get_fallback_events()
+
+        return successful_matches
 
     async def get_events_by_date(self, day: int, month: int, year: int) -> Optional[Dict[str, Any]]:
         """Get scheduled events for a specific date."""
