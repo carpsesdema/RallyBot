@@ -1,1 +1,1 @@
-web: gunicorn -w 1 --threads 1 -k uvicorn.workers.UvicornWorker backend.api_server:app
+web: uvicorn backend.api_server:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 65
