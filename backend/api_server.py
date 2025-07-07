@@ -45,6 +45,7 @@ async def database_writer_task(queue: asyncio.Queue):
 
     while True:
         try:
+            # Wait for a new piece of data from the queue.
             match_data = await queue.get()
 
             # A 'None' in the queue is the signal to shut down.
@@ -53,13 +54,16 @@ async def database_writer_task(queue: asyncio.Queue):
                 break
 
             # This is a blocking I/O call, but it's fine because this task
-            # runs independently and doesn't block the main server.
+            # runs independently and doesn't block the main API server.
             db_manager.process_match_data(match_data)
+            # Notify the queue that the item has been processed.
             queue.task_done()
 
         except Exception as e:
+            # Log any errors that occur during DB writing.
             logger.error(f"DATABASE_WRITER_ERROR: An error occurred: {e}", exc_info=True)
 
+    # Cleanly close the database connection when the loop breaks.
     if db_manager:
         db_manager.close()
 
@@ -68,12 +72,15 @@ async def database_writer_task(queue: asyncio.Queue):
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     Manages the application's startup and shutdown lifecycle.
+    This is where we start and stop our background tasks.
     """
     logger.info("Tennis Server Lifespan: Startup sequence initiated.")
 
-    # Create and start the database writer queue and task
+    # 1. Create the queue that will hold data to be written to the DB.
     db_write_queue = asyncio.Queue()
     app.state.db_write_queue = db_write_queue
+
+    # 2. Start the database writer task in the background.
     app.state.db_writer_task = asyncio.create_task(database_writer_task(db_write_queue))
     logger.info("Dedicated database writer task has been started.")
 
@@ -82,17 +89,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.rag_pipeline = None  # Placeholder for RAG components
 
     logger.info("Tennis Server Lifespan: Startup complete. Application is ready.")
-    yield  # Application runs here
+
+    yield  # The application runs here
 
     # --- Shutdown Sequence ---
     logger.info("Tennis Server Lifespan: Shutdown sequence initiated.")
 
-    # Signal the writer task to shut down by sending the sentinel value
+    # 1. Signal the writer task to shut down by sending the sentinel value (None).
     if hasattr(app.state, 'db_write_queue') and app.state.db_write_queue:
         logger.info("Sending shutdown signal to database writer task...")
         await app.state.db_write_queue.put(None)
 
-    # Wait for the writer task to finish processing any remaining items and exit
+    # 2. Wait for the writer task to finish processing any remaining items and exit.
     if hasattr(app.state, 'db_writer_task') and app.state.db_writer_task:
         try:
             await asyncio.wait_for(app.state.db_writer_task, timeout=30.0)
@@ -111,7 +119,7 @@ app = FastAPI(
     title="Tennis Intelligence Backend API",
     description="API server for Tennis Intelligence, handling RAG operations and LLM interactions with professional tennis data.",
     version="2.0.0",  # Version bump for new architecture
-    lifespan=lifespan
+    lifespan=lifespan  # Hook in our new lifespan manager!
 )
 
 # Include API routers

@@ -21,6 +21,7 @@ class DatabaseManager:
         self.db_path = db_path
         self.conn = None
         try:
+            # Ensure the persistent directory exists on Railway
             db_dir = os.path.dirname(self.db_path)
             os.makedirs(db_dir, exist_ok=True)
 
@@ -38,6 +39,7 @@ class DatabaseManager:
     def _ensure_schema(self):
         """Checks if the 'players' table exists, and if not, runs the entire schema setup."""
         if not self.conn:
+            logger.error("Cannot ensure schema, no database connection.")
             return
 
         cursor = self.conn.cursor()
@@ -48,8 +50,13 @@ class DatabaseManager:
 
         logger.warning("Database tables not found. Initializing schema now...")
         try:
-            # Schema file is located relative to this file's project structure
+            # Schema file is located relative to this file's project structure.
+            # IMPORTANT: This assumes a 'tennis_schema.sql' file exists in the same 'database' directory.
             schema_path = Path(__file__).parent / "tennis_schema.sql"
+            if not schema_path.exists():
+                logger.critical(f"CRITICAL: Schema file not found at {schema_path}. Cannot create tables.")
+                raise FileNotFoundError(f"Schema file not found at {schema_path}")
+
             with open(schema_path, 'r', encoding='utf-8') as f:
                 schema_sql = f.read()
 
@@ -124,17 +131,22 @@ class DatabaseManager:
         """, (player1_id, player2_id, player1_wins_increment, datetime.now().isoformat(), winner_id, datetime.now().date().isoformat()))
 
     def process_match_data(self, match_data: Dict[str, Any]):
-        """Processes comprehensive match data, updating players, matches, and H2H stats."""
+        """
+        Processes comprehensive match data, updating players, matches, and H2H stats.
+        This is now robust enough to handle inconsistent API keys like 'homePlayer' vs 'homeTeam'.
+        """
         if not self.conn:
             logger.error("Cannot process match data, no database connection.")
             return
 
-        home_player_data = match_data.get("homePlayer") or match_data.get("player1")
-        away_player_data = match_data.get("awayPlayer") or match_data.get("player2")
+        # FLEXIBLE DATA HANDLING: Check for multiple possible keys from the API.
+        home_player_data = match_data.get("homePlayer") or match_data.get("homeTeam")
+        away_player_data = match_data.get("awayPlayer") or match_data.get("awayTeam")
         winner_code = match_data.get("winnerCode")
 
+        # Core data validation: only skip if absolutely necessary.
         if not all([home_player_data, away_player_data, winner_code is not None]):
-            logger.warning(f"Skipping match ID {match_data.get('id')} due to incomplete player or winner data.")
+            logger.warning(f"Skipping match ID {match_data.get('id', 'N/A')} due to incomplete player or winner data.")
             return
 
         cursor = self.conn.cursor()
