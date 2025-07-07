@@ -23,29 +23,6 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class PlayerData:
-    id: Optional[int]
-    name: str
-    ranking: Optional[int]
-    points: Optional[int]
-    country: Optional[str]
-    last_updated: datetime
-
-
-@dataclass
-class MatchData:
-    id: int
-    player1: PlayerData
-    player2: PlayerData
-    tournament: str
-    surface: str
-    status: str
-    odds: Optional[Dict[str, float]]
-    live_score: Optional[Dict[str, Any]]
-    betting_analysis: Optional[Dict[str, Any]]
-
-
 class ProfessionalTennisAPIClient:
     def __init__(self, config: Optional[TennisAPIConfig] = None):
         self.config = config or tennis_config
@@ -79,18 +56,9 @@ class ProfessionalTennisAPIClient:
     # --- Event Endpoints ---
     async def get_live_events(self, enhance_with_details: bool = False) -> List[Dict[str, Any]]:
         """
-        Get live events from the direct EdgeAI endpoint.
-
-        This method fetches live tennis match data directly from the EdgeAI API,
-        bypassing the RapidAPI helper for this specific endpoint.
-
-        Args:
-            enhance_with_details: This argument is currently unused but kept for
-                                  API consistency.
-
-        Returns:
-            A list of dictionaries, where each dictionary represents a live match.
-            Returns a fallback list if the API call fails or no live events are found.
+        Get live events from the direct EdgeAI endpoint. This now passes the raw
+        event data through to ensure no fields are lost, aligning with the
+        behavior of the backfill client.
         """
         logger.info("🔴 FETCHING LIVE EVENTS from EdgeAI endpoint")
         url = "https://api.edgeai.pro/api/tennis/events/live"
@@ -99,7 +67,7 @@ class ProfessionalTennisAPIClient:
         try:
             logger.debug(f"📡 Direct API Call: {url}")
             response = await self._client.get(url)
-            response.raise_for_status()  # Raises HTTPStatusError for 4xx/5xx responses
+            response.raise_for_status()
             live_data = response.json()
             logger.debug(f"✅ Success: {url}")
         except httpx.HTTPStatusError as e:
@@ -116,24 +84,17 @@ class ProfessionalTennisAPIClient:
             logger.warning("Live events data is empty or malformed. Using fallback.")
             return self._get_fallback_events()
 
-        events = live_data['events']
+        events = live_data.get('events', [])
         if not events:
             logger.info("No live events currently available. Using fallback.")
             return self._get_fallback_events()
 
-        successful_matches = []
-        for event in events:
-            match = self._convert_to_match_data(event)
-            if match:
-                match_dict = asdict(match)
-                match_dict["enhancement_status"] = "basic"
-                successful_matches.append(match_dict)
-
-        if not successful_matches:
-            logger.info("Could not convert any live events to MatchData. Using fallback.")
-            return self._get_fallback_events()
-
-        return successful_matches
+        # <<< THE FIX IS HERE! >>>
+        # We now return the raw event list directly from the API.
+        # This prevents data loss (e.g., winnerCode) that was happening during
+        # the old dataclass conversion. The db_manager is now robust enough
+        # to handle the different player key schemas (homePlayer vs player1).
+        return events
 
     async def get_events_by_date(self, day: int, month: int, year: int) -> Optional[Dict[str, Any]]:
         """Get scheduled events for a specific date."""
@@ -313,13 +274,13 @@ class ProfessionalTennisAPIClient:
         """Comprehensive player analysis"""
         try:
             search_data = await self.search_tennis_entity(player_name)
-            player_data = self._parse_player_search(search_data, player_name) if search_data else None
+            player_data_search_result = self._parse_player_search(search_data, player_name) if search_data else None
 
-            if not player_data or not player_data.id:
+            if not player_data_search_result or not player_data_search_result.get('id'):
                 logger.error(f"Could not find player '{player_name}' after intelligent search.")
                 return {"error": f"Player '{player_name}' not found"}
 
-            player_id = player_data.id
+            player_id = player_data_search_result['id']
             logger.info(f"📊 ANALYZING: {player_name} (ID: {player_id})")
 
             tasks = [
@@ -347,7 +308,7 @@ class ProfessionalTennisAPIClient:
                         pass
 
             return {
-                "profile": asdict(player_data),
+                "profile": player_data_search_result,
                 "player_details": player_details if not isinstance(player_details, Exception) else None,
                 "recent_events": previous_events if not isinstance(previous_events, Exception) else None,
                 "future_events": future_events if not isinstance(future_events, Exception) else None,
@@ -377,9 +338,9 @@ class ProfessionalTennisAPIClient:
                 return self._get_fallback_h2h(player1_name, player2_name)
 
             return {
-                "matchup": f"{p1_data.name} vs {p2_data.name}",
-                "player1_profile": asdict(p1_data),
-                "player2_profile": asdict(p2_data),
+                "matchup": f"{p1_data.get('name')} vs {p2_data.get('name')}",
+                "player1_profile": p1_data,
+                "player2_profile": p2_data,
                 "historical_h2h": {"note": "H2H data available via event analysis"},
                 "confidence_level": "medium",
                 "analysis_timestamp": datetime.now().isoformat()
@@ -388,55 +349,6 @@ class ProfessionalTennisAPIClient:
         except Exception as e:
             logger.error(f"H2H failed: {e}", exc_info=True)
             return self._get_fallback_h2h(player1_name, player2_name)
-
-    def _convert_to_match_data(self, event_data: Dict[str, Any]) -> Optional[MatchData]:
-        """Convert event data - FIXED for player1/player2 schema"""
-        try:
-            event_id = event_data.get('id')
-            if not event_id:
-                return None
-
-            player1_data = event_data.get('homePlayer') or event_data.get('player1')
-            player2_data = event_data.get('awayPlayer') or event_data.get('player2')
-
-            if not player1_data or not player2_data:
-                # This is a common occurrence for some events; log as debug instead of warning to reduce noise.
-                logger.debug(f"Skipping event {event_id} due to missing player data.")
-                return None
-
-            player1 = PlayerData(
-                id=player1_data.get('id'),
-                name=player1_data.get('name', 'Player 1'),
-                ranking=player1_data.get('ranking'),
-                points=None,
-                country=player1_data.get('country'),
-                last_updated=datetime.now()
-            )
-
-            player2 = PlayerData(
-                id=player2_data.get('id'),
-                name=player2_data.get('name', 'Player 2'),
-                ranking=player2_data.get('ranking'),
-                points=None,
-                country=player2_data.get('country'),
-                last_updated=datetime.now()
-            )
-
-            return MatchData(
-                id=event_id,
-                player1=player1,
-                player2=player2,
-                tournament=event_data.get('tournament', {}).get('name', 'Unknown Tournament'),
-                surface=event_data.get('groundType', 'Unknown'),
-                status=event_data.get('status', {}).get('description', 'Unknown'),
-                odds=event_data.get('odds'),
-                live_score=event_data.get('live_score'),
-                betting_analysis=None
-            )
-
-        except Exception as e:
-            logger.error(f"Event conversion failed for event ID {event_data.get('id', 'N/A')}: {e}", exc_info=True)
-            return None
 
     def _extract_live_score(self, event_details: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Extract live score"""
@@ -449,7 +361,7 @@ class ProfessionalTennisAPIClient:
 
         return None
 
-    def _parse_player_search(self, data: Dict[str, Any], player_name: str) -> Optional[PlayerData]:
+    def _parse_player_search(self, data: Dict[str, Any], player_name: str) -> Optional[Dict[str, Any]]:
         """
         Intelligently parse player search results.
         Finds all matching players and returns the one with the highest ranking.
@@ -464,29 +376,27 @@ class ProfessionalTennisAPIClient:
                 entity = result.get('entity', {})
                 entity_name = entity.get('name', '').lower()
 
-                # Check for substring match, e.g., 'alcaraz' in 'carlos alcaraz'
                 if player_name.lower() in entity_name:
-                    player = PlayerData(
-                        id=entity.get('id'),
-                        name=entity.get('name'),
-                        ranking=entity.get('ranking'),
-                        country=entity.get('country', {}).get('name') if isinstance(entity.get('country'),
+                    player_dict = {
+                        'id': entity.get('id'),
+                        'name': entity.get('name'),
+                        'ranking': entity.get('ranking'),
+                        'country': entity.get('country', {}).get('name') if isinstance(entity.get('country'),
                                                                                     dict) else entity.get('country'),
-                        points=entity.get('rankingPoints'),
-                        last_updated=datetime.now()
-                    )
-                    found_players.append(player)
+                        'points': entity.get('rankingPoints'),
+                        'last_updated': datetime.now().isoformat()
+                    }
+                    found_players.append(player_dict)
 
         if not found_players:
             logger.warning(f"No player entities found in search results for '{player_name}'.")
             return None
 
-        # Sort by ranking (lowest number is best). Unranked players go to the end.
-        found_players.sort(key=lambda p: p.ranking if p.ranking is not None else 9999)
+        found_players.sort(key=lambda p: p.get('ranking') if p.get('ranking') is not None else 9999)
 
         best_match = found_players[0]
         logger.info(
-            f"Found {len(found_players)} potential matches for '{player_name}'. Selected best match: {best_match.name} (Ranking: {best_match.ranking})")
+            f"Found {len(found_players)} potential matches for '{player_name}'. Selected best match: {best_match.get('name')} (Ranking: {best_match.get('ranking')})")
 
         return best_match
 
@@ -530,6 +440,7 @@ class ProfessionalTennisAPIClient:
                 "tournament": "ATP Masters 1000",
                 "surface": "Hard",
                 "status": "Live - Set 2",
+                "winnerCode": 1,
                 "odds": None,
                 "live_score": {"set1": "6-4", "set2": "3-2"},
                 "betting_analysis": None,

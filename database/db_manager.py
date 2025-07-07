@@ -139,8 +139,9 @@ class DatabaseManager:
             logger.error("Cannot process match data, no database connection.")
             return
 
-        home_player_data = match_data.get("homePlayer")
-        away_player_data = match_data.get("awayPlayer")
+        # <<< THE FIX IS HERE! Handles both homePlayer/awayPlayer and player1/player2 schemas >>>
+        home_player_data = match_data.get("homePlayer") or match_data.get("player1")
+        away_player_data = match_data.get("awayPlayer") or match_data.get("player2")
         winner_code = match_data.get("winnerCode")
 
         if not all([home_player_data, away_player_data, winner_code]):
