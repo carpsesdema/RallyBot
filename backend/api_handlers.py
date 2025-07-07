@@ -1,5 +1,5 @@
 # backend/api_handlers.py
-# FINAL ARCHITECTURAL FIX: Uses BackgroundTasks for database writes.
+# FINAL ARCHITECTURE: API Handler now queues data for a dedicated background writer.
 
 import logging
 import zipfile
@@ -7,13 +7,10 @@ import tempfile
 import shutil
 import os
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Request, status, BackgroundTasks, UploadFile, File, Header, Depends
+from fastapi import APIRouter, HTTPException, Request, status, UploadFile, File, Header, Depends
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from pydantic import BaseModel, Field
-
-# New import for the background writer
-from backend.db_writer import write_match_to_db
+from pydantic import BaseModel
 
 # Existing imports from your project
 from config import settings
@@ -32,9 +29,7 @@ async def verify_admin_key(x_admin_key: str = Header(None)):
     """Verifies the admin API key provided in the request header."""
     if not x_admin_key:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin API Key header missing")
-
     server_admin_key = os.getenv("ADMIN_API_KEY")
-
     if not server_admin_key or x_admin_key != server_admin_key:
         logger.warning(f"Failed admin access attempt with key: {x_admin_key}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Admin API Key")
@@ -45,29 +40,36 @@ async def verify_admin_key(x_admin_key: str = Header(None)):
 router = APIRouter()
 
 
-# --- ADMIN ENDPOINT (THE FIX IS HERE) ---
+# --- THE MAIN FIX IS HERE ---
 @router.post(
     "/admin/save-match",
-    summary="Accepts match data and saves it in the background",
+    summary="Accepts match data and queues it for background processing",
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Depends(verify_admin_key)]
 )
 async def save_single_match(
     match_data: Dict[str, Any],
-    background_tasks: BackgroundTasks
+    request: Request  # We need the request object to access the application state
 ):
     """
-    Receives match data, responds IMMEDIATELY with 202 Accepted,
-    and adds the database write operation to a background task queue.
-    This prevents the server from timing out.
+    This endpoint is now extremely fast. It receives match data, puts it into
+    a dedicated asyncio.Queue, and returns 202 Accepted immediately.
+    The actual database write is handled by a separate, long-running task.
     """
     match_id = match_data.get('id', 'Unknown')
-    logger.info(f"API_HANDLER: Received request for match ID {match_id}. Queueing for background save.")
+    try:
+        # Get the queue from the application state
+        db_write_queue = request.app.state.db_write_queue
+        # Put the item in the queue. This is a non-blocking, async operation.
+        await db_write_queue.put(match_data)
 
-    # Add the slow database operation to the background
-    background_tasks.add_task(write_match_to_db, match_data)
+        logger.info(f"API_HANDLER: Queued match ID {match_id} for background processing.")
+        return {"status": "accepted", "message": "Match data queued for processing.", "match_id": match_id}
 
-    return {"status": "accepted", "message": "Match data has been accepted and is being processed in the background.", "match_id": match_id}
+    except Exception as e:
+        logger.error(f"API_HANDLER: Failed to queue match ID {match_id}. Error: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Failed to queue match data: {str(e)}")
 
 
 # ===== CORE RAG ENDPOINTS =====
@@ -87,10 +89,8 @@ async def upload_knowledge_base_zip(file: UploadFile = File(...)):
             with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
                 if kb_dir.exists():
                     for item in kb_dir.iterdir():
-                        if item.is_file():
-                            item.unlink()
-                        elif item.is_dir():
-                            shutil.rmtree(item)
+                        if item.is_file(): item.unlink()
+                        elif item.is_dir(): shutil.rmtree(item)
                 zip_ref.extractall(kb_dir)
                 extracted_files = zip_ref.namelist()
             return {"status": "success", "message": f"Successfully uploaded and extracted {file.filename}",
@@ -299,7 +299,6 @@ async def get_tournament_rounds_handler(tournament_id: int, season_id: int):
     client = None
     try:
         client = TennisAPIClient()
-        # THIS IS THE LINE THAT WAS FIXED
         data = await client.get_tournament_rounds(tournament_id, season_id)
         if not data: raise HTTPException(status_code=404,
                                          detail=f"No rounds found for tournament {tournament_id}, season {season_id}.")
