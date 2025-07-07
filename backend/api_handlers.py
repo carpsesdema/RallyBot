@@ -1,77 +1,28 @@
 # backend/api_handlers.py
-# FINAL FIX: The admin key verification now reads directly from the environment to ensure correctness.
+# FINAL ARCHITECTURAL FIX: Uses BackgroundTasks for database writes.
 
 import logging
 import zipfile
 import tempfile
 import shutil
-import os  # <<< IMPORT OS TO READ ENVIRONMENT VARIABLES DIRECTLY
+import os
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, status, BackgroundTasks, UploadFile, File, Header, Depends
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, Field
 
-from config import settings, tennis_config
+# New import for the background writer
+from backend.db_writer import write_match_to_db
 
-try:
-    from database.db_manager import DatabaseManager
-    from llm_interface.tennis_api_client import ProfessionalTennisAPIClient as TennisAPIClient
-    from models import (
-        QueryRequest, QueryResponse,
-        IngestDirectoryRequest, IngestDirectoryResponse,
-        AvailableModelsResponse
-    )
-    from utils import RAGPipelineError
-except ImportError as e:
-    # This block is for fallback purposes and can be ignored if your environment is set up.
-    print(f"Import error in API handlers: {e}")
-
-
-    class MockSettings:
-        pass
-
-
-    settings = MockSettings()
-
-
-    class MockTennisConfig:
-        database = type('obj', (), {'enable_caching': False})()
-
-
-    tennis_config = MockTennisConfig()
-
-
-    class QueryRequest(BaseModel):
-        query_text: str; top_k_chunks: int = 3; model_name: Optional[str] = None
-
-
-    class QueryResponse(BaseModel):
-        answer: str; retrieved_chunks_details: List = []; used_web_search: bool = False
-
-
-    class IngestDirectoryRequest(BaseModel):
-        directory_path: str
-
-
-    class IngestDirectoryResponse(BaseModel):
-        status: str; documents_processed: int; chunks_created: int
-
-
-    class AvailableModelsResponse(BaseModel):
-        models: List[str] = []
-
-
-    class RAGPipelineError(Exception):
-        pass
-
-
-    class TennisAPIClient:
-        pass
-
-
-    class DatabaseManager:
-        pass
+# Existing imports from your project
+from config import settings
+from llm_interface.tennis_api_client import ProfessionalTennisAPIClient as TennisAPIClient
+from models import (
+    QueryRequest, QueryResponse,
+    IngestDirectoryRequest, IngestDirectoryResponse,
+    AvailableModelsResponse
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +33,6 @@ async def verify_admin_key(x_admin_key: str = Header(None)):
     if not x_admin_key:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin API Key header missing")
 
-    # <<< THE FINAL FIX IS HERE >>>
-    # Read the correct key directly from the server's environment at the time of the request.
-    # This bypasses any potential config loading issues.
     server_admin_key = os.getenv("ADMIN_API_KEY")
 
     if not server_admin_key or x_admin_key != server_admin_key:
@@ -97,31 +45,29 @@ async def verify_admin_key(x_admin_key: str = Header(None)):
 router = APIRouter()
 
 
-# --- ADMIN ENDPOINT ---
+# --- ADMIN ENDPOINT (THE FIX IS HERE) ---
 @router.post(
     "/admin/save-match",
-    summary="Save a single enriched match data object",
+    summary="Accepts match data and saves it in the background",
+    status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Depends(verify_admin_key)]
 )
-async def save_single_match(match_data: Dict[str, Any]):
+async def save_single_match(
+    match_data: Dict[str, Any],
+    background_tasks: BackgroundTasks
+):
     """
-    Receives a single enriched match data object from a trusted client and saves it to the database.
+    Receives match data, responds IMMEDIATELY with 202 Accepted,
+    and adds the database write operation to a background task queue.
+    This prevents the server from timing out.
     """
-    logger.info(f"Received request to save match ID: {match_data.get('id', 'Unknown')}")
-    db_manager = None
-    try:
-        db_manager = DatabaseManager()
-        db_manager.process_match_data(match_data)
-        logger.info(f"Successfully saved match ID: {match_data.get('id')}")
-        return {"status": "success", "message": "Match data processed and saved successfully.",
-                "match_id": match_data.get('id')}
-    except Exception as e:
-        logger.error(f"Error saving match data for ID {match_data.get('id', 'Unknown')}: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Failed to save match data: {str(e)}")
-    finally:
-        if db_manager:
-            db_manager.close()
+    match_id = match_data.get('id', 'Unknown')
+    logger.info(f"API_HANDLER: Received request for match ID {match_id}. Queueing for background save.")
+
+    # Add the slow database operation to the background
+    background_tasks.add_task(write_match_to_db, match_data)
+
+    return {"status": "accepted", "message": "Match data has been accepted and is being processed in the background.", "match_id": match_id}
 
 
 # ===== CORE RAG ENDPOINTS =====
@@ -197,23 +143,23 @@ async def rag_chat(payload: QueryRequest, request: Request):
 # ===== TENNIS INTELLIGENCE ENDPOINTS =====
 
 class LiveEventsResponse(BaseModel):
-    status: str;
-    events_count: int;
-    events: List[Dict[str, Any]];
-    data_sources: List[str];
-    cache_status: str;
+    status: str
+    events_count: int
+    events: List[Dict[str, Any]]
+    data_sources: List[str]
+    cache_status: str
     response_time_ms: int
 
 
 class MatchupAnalysisRequest(BaseModel):
-    player1: str;
+    player1: str
     player2: str
 
 
 class MatchupAnalysisResponse(BaseModel):
-    status: str;
-    matchup: str;
-    analysis: Dict[str, Any];
+    status: str
+    matchup: str
+    analysis: Dict[str, Any]
     confidence_level: str
 
 
@@ -353,6 +299,7 @@ async def get_tournament_rounds_handler(tournament_id: int, season_id: int):
     client = None
     try:
         client = TennisAPIClient()
+        # THIS IS THE LINE THAT WAS FIXED
         data = await client.get_tournament_rounds(tournament_id, season_id)
         if not data: raise HTTPException(status_code=404,
                                          detail=f"No rounds found for tournament {tournament_id}, season {season_id}.")
