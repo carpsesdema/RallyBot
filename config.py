@@ -1,4 +1,4 @@
-# config.py - MODIFIED for more robust environment variable loading.
+# config.py - FINAL VERSION with robust environment loading.
 import logging
 import os
 from pathlib import Path
@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-# --- FIX: Call load_dotenv() at the top of the module ---
+# --- Call load_dotenv() at the top of the module ---
 # This ensures that for local development, .env is loaded before any other code runs.
 # In production (like Railway), os.getenv will read the platform's set variables directly.
 load_dotenv()
@@ -47,7 +47,7 @@ def load_tennis_config() -> TennisAPIConfig:
         rapidapi_base=os.getenv("TENNIS_RAPIDAPI_BASE", "https://tennisapi1.p.rapidapi.com/api/tennis"),
     )
     credentials = TennisAPICredentials(
-        # This will now correctly read from Railway's environment variables
+        # This will now correctly read from Railway's environment variables or local .env
         rapidapi_key=os.getenv("TENNIS_RAPIDAPI_KEY"),
         rapidapi_host=os.getenv("TENNIS_RAPIDAPI_HOST", "tennisapi1.p.rapidapi.com"),
     )
@@ -60,20 +60,18 @@ tennis_config = load_tennis_config()
 
 def validate_tennis_config() -> Dict[str, bool]:
     """
-    Checks if the necessary API credentials have been loaded.
+    Checks if the necessary API credentials have been loaded and logs the status.
     """
-    # --- FIX: Simplified and more direct check ---
     has_key = bool(tennis_config.credentials.rapidapi_key)
     logger = logging.getLogger(__name__)  # Local logger for this check
     if not has_key:
-        logger.warning("Validation check: TENNIS_RAPIDAPI_KEY is missing or empty.")
+        logger.warning("Validation check: TENNIS_RAPIDAPI_KEY is missing or empty. Live data features will be disabled.")
     else:
         logger.info("Validation check: TENNIS_RAPIDAPI_KEY is present.")
     return {"has_primary_api": has_key}
 
 
 # --- Settings for RAG/LLM System (for backward compatibility) ---
-# This class definition should remain as it is in your project.
 class Settings:
     def __init__(self):
         # Import logging inside the method to avoid circular import issues if logging uses settings

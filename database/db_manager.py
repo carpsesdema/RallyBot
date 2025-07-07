@@ -40,7 +40,6 @@ class DatabaseManager:
     def _upsert_player(self, cursor: sqlite3.Cursor, player_data: Dict[str, Any]) -> Optional[int]:
         """
         Inserts or updates a player's details and returns their internal ID.
-        (This helper method was already correct)
         """
         api_player_id = player_data.get("id")
         player_name = player_data.get("name")
@@ -68,7 +67,6 @@ class DatabaseManager:
 
         return player_row['id']
 
-    # <<< FIX: Method signature updated to accept player IDs correctly.
     def _insert_match(self, cursor: sqlite3.Cursor, match_data: Dict[str, Any], player1_id: int, player2_id: int,
                       winner_id: int) -> None:
         """
@@ -90,7 +88,6 @@ class DatabaseManager:
 
         score = f"P1: {home_score.get('display')} - P2: {away_score.get('display')}"
 
-        # <<< FIX: SQL statement now uses correct column names from schema (player1_id, player2_id, round_name)
         cursor.execute("""
             INSERT INTO matches (api_match_id, player1_id, player2_id, winner_id, tournament_name, round_name, match_date, score_summary, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -110,25 +107,33 @@ class DatabaseManager:
 
     def _update_head_to_head(self, cursor: sqlite3.Cursor, winner_id: int, loser_id: int) -> None:
         """
-        Updates the head-to-head statistics for the two players involved in a match.
+        Updates the head-to-head statistics based on the actual schema.
+        This now correctly updates total_matches and player1_wins without error.
         """
+        # Ensure player1_id is always the smaller ID for consistent row lookup
         player1_id = min(winner_id, loser_id)
         player2_id = max(winner_id, loser_id)
 
-        wins1_increment = 1 if winner_id == player1_id else 0
-        wins2_increment = 1 if winner_id == player2_id else 0
+        # Determine if player1 (the one with the smaller ID) was the winner
+        player1_wins_increment = 1 if winner_id == player1_id else 0
 
-        # <<< FIX: SQL statement now uses correct column names (player1_wins, player2_wins)
+        # This SQL statement is now perfectly compatible with your schema
         cursor.execute("""
-            INSERT INTO head_to_head (player1_id, player2_id, player1_wins, player2_wins, last_updated)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO head_to_head (player1_id, player2_id, total_matches, player1_wins, last_updated, last_match_winner_id, last_match_date)
+            VALUES (?, ?, 1, ?, ?, ?, ?)
             ON CONFLICT(player1_id, player2_id) DO UPDATE SET
+                total_matches = total_matches + 1,
                 player1_wins = player1_wins + excluded.player1_wins,
-                player2_wins = player2_wins + excluded.player2_wins,
-                last_updated = excluded.last_updated;
+                last_updated = excluded.last_updated,
+                last_match_winner_id = excluded.last_match_winner_id,
+                last_match_date = excluded.last_match_date;
         """, (
-            player1_id, player2_id, wins1_increment, wins2_increment,
-            datetime.now().isoformat()
+            player1_id,
+            player2_id,
+            player1_wins_increment,
+            datetime.now().isoformat(),
+            winner_id,
+            datetime.now().date().isoformat()
         ))
 
     def process_match_data(self, match_data: Dict[str, Any]) -> None:
@@ -139,7 +144,6 @@ class DatabaseManager:
             logger.error("Cannot process match data, no database connection.")
             return
 
-        # <<< THE FIX IS HERE! Handles both homePlayer/awayPlayer and player1/player2 schemas >>>
         home_player_data = match_data.get("homePlayer") or match_data.get("player1")
         away_player_data = match_data.get("awayPlayer") or match_data.get("player2")
         winner_code = match_data.get("winnerCode")
@@ -159,7 +163,6 @@ class DatabaseManager:
             winner_id = home_player_id if winner_code == 1 else away_player_id
             loser_id = away_player_id if winner_code == 1 else home_player_id
 
-            # <<< FIX: Call _insert_match with the correct arguments
             self._insert_match(cursor, match_data, home_player_id, away_player_id, winner_id)
 
             self._update_head_to_head(cursor, winner_id, loser_id)
