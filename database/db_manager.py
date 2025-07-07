@@ -10,6 +10,7 @@ from the API.
 
 import sqlite3
 import logging
+import os  # Import the os module
 from datetime import datetime
 from typing import Dict, Any, Optional
 
@@ -19,15 +20,23 @@ logger = logging.getLogger(__name__)
 class DatabaseManager:
     """Handles database connections and data processing."""
 
-    def __init__(self, db_path: str = "database/tennis_intelligence.db"):
-        """Initializes the DatabaseManager, connecting to the DB.
+    def __init__(self, db_path: str = "/data/tennis_intelligence.db"):
+        """
+        Initializes the DatabaseManager, connecting to the DB on the persistent volume.
 
         Args:
-            db_path (str): The file path to the SQLite database.
+            db_path (str): The file path to the SQLite database. Defaults to /data/ for Railway.
         """
         self.db_path = db_path
         self.conn = None
         try:
+            # On Railway, the /data directory is the persistent volume.
+            # We need to ensure the directory exists before connecting.
+            db_dir = os.path.dirname(self.db_path)
+            if not os.path.exists(db_dir):
+                os.makedirs(db_dir)
+                logger.info(f"Created database directory: {db_dir}")
+
             self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
             # Enable foreign key support
