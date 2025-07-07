@@ -1,30 +1,24 @@
-# database/setup_tennis_db.py - FIXED VERSION
 import sqlite3
 import os
 from pathlib import Path
 
 
 def create_tennis_database():
-    """Create the tennis intelligence database with proper path handling for production."""
+    """
+    Creates the tennis intelligence database directly on the Railway persistent volume.
+    This version removes environment detection to be 100% reliable.
+    """
+    # On Railway, the persistent volume is ALWAYS at /data. We write there directly.
+    db_dir = Path("/data")
+    db_path = db_dir / "tennis_intelligence.db"
 
-    # For production (like Railway), we want the DB on a persistent volume, typically /data
-    # For local dev, we can keep it in the database directory.
-    is_production = os.getenv("RAILWAY_APP_URL") is not None
-    if is_production:
-        db_dir = Path("/data")
-        db_path = db_dir / "tennis_intelligence.db"
-        print("🚀 Production environment detected (Railway). Targeting persistent volume.")
-    else:
-        db_dir = Path(__file__).parent
-        db_path = db_dir / "tennis_intelligence.db"
-        print("🏠 Local environment detected. Targeting local 'database' directory.")
-
-    print(f"📍 Database will be created at: {db_path}")
+    print("🚀 Targeting Railway persistent volume directly.")
+    print(f"📍 Database path set to: {db_path}")
 
     # Ensure the target directory exists
     db_dir.mkdir(parents=True, exist_ok=True)
 
-    # Schema file is always relative to this script's location
+    # Schema file is always relative to this script's location inside the container
     script_dir = Path(__file__).parent
     schema_file = script_dir / "tennis_schema.sql"
     print(f"📍 Looking for schema at: {schema_file}")
@@ -39,13 +33,22 @@ def create_tennis_database():
     try:
         with open(schema_file, 'r', encoding='utf-8') as f:
             schema_sql = f.read()
-        print(f"✅ Schema file read successfully ({len(schema_sql)} characters)")
+        print(f"✅ Schema file read successfully.")
 
         conn = sqlite3.connect(db_path)
+        # Check if tables already exist to avoid errors on redeploy
         cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='players';")
+        if cursor.fetchone():
+            print("✅ Database tables already exist. Setup is already complete.")
+            return str(db_path)
+
+        # If tables don't exist, create them
+        print("Database tables not found. Creating them now...")
         cursor.executescript(schema_sql)
         conn.commit()
 
+        # Verify tables were created
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = cursor.fetchall()
 
