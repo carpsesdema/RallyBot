@@ -1,5 +1,5 @@
 # database/db_manager.py
-# FINAL HARDENED VERSION - NO COMPLEX QUERIES
+# FINAL HARDENED VERSION - NO COMPLEX SQL
 
 import sqlite3
 import logging
@@ -29,7 +29,7 @@ class DatabaseManager:
             self.conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=10)
             self.conn.row_factory = sqlite3.Row
             self.conn.execute("PRAGMA foreign_keys = ON;")
-            self.conn.execute("PRAGMA journal_mode=WAL;") # Improve concurrency
+            self.conn.execute("PRAGMA journal_mode=WAL;")
             logger.info(f"Database connection established to {self.db_path}")
         except sqlite3.Error as e:
             logger.error(f"Database connection failed: {e}", exc_info=True)
@@ -79,10 +79,7 @@ class DatabaseManager:
         cursor.execute("SELECT id FROM matches WHERE api_match_id = ?", (api_match_id,))
         result = cursor.fetchone()
 
-        if result:
-            # Match exists, maybe update it
-            pass # For now, we do nothing if the match already exists
-        else:
+        if not result:
             cursor.execute("""
                 INSERT INTO matches (api_match_id, player1_id, player2_id, winner_id, tournament_name, round_name, match_date, score_summary, surface, created_at)
                 VALUES (:api_match_id, :player1_id, :player2_id, :winner_id, :tournament_name, :round_name, :match_date, :score_summary, :surface, :created_at)
@@ -99,7 +96,6 @@ class DatabaseManager:
         p2_wins_inc = 1 if winner_id == p2_id else 0
 
         if h2h_record:
-            # Record exists, update it
             new_total = h2h_record['total_matches'] + 1
             new_p1_wins = h2h_record['player1_wins'] + p1_wins_inc
             new_p2_wins = h2h_record['player2_wins'] + p2_wins_inc
@@ -115,7 +111,6 @@ class DatabaseManager:
                 WHERE id = ?
             """, (new_total, new_p1_wins, new_p2_wins, datetime.now().date().isoformat(), winner_id, datetime.now().isoformat(), h2h_record['id']))
         else:
-            # No record, insert a new one
             cursor.execute("""
                 INSERT INTO head_to_head (player1_id, player2_id, total_matches, player1_wins, player2_wins, last_match_date, last_match_winner_id, last_updated)
                 VALUES (?, ?, 1, ?, ?, ?, ?, ?)
@@ -136,6 +131,7 @@ class DatabaseManager:
 
         cursor = self.conn.cursor()
         try:
+            self.conn.execute("BEGIN")
             home_player_id = self._upsert_player(cursor, home_player_data)
             away_player_id = self._upsert_player(cursor, away_player_data)
 
