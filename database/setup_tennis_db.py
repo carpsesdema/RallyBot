@@ -1,81 +1,65 @@
 import sqlite3
-import os
+import sys
 from pathlib import Path
 
-# Import the centralized tennis config
-from config import tennis_config
+# This script is now the single source of truth for creating the database.
+# It's run by the Procfile BEFORE the server starts.
+
+# This path MUST match the one used in config.py
+# We are hardcoding it here to have zero dependencies.
+DB_PATH = Path("/data/tennis_intelligence.db")
 
 
-def create_tennis_database():
+def main():
     """
-    Creates the tennis intelligence database directly on the Railway persistent volume.
-    This version removes environment detection to be 100% reliable and uses centralized config.
+    Creates the database and schema from tennis_schema.sql.
+    Exits with code 1 on failure, 0 on success.
     """
-    # Use the path from the centralized config
-    db_path = Path(tennis_config.database.database_path)
-    db_dir = db_path.parent
+    print("--- Running Production Database Setup ---")
 
-    print("🚀 Targeting Railway persistent volume directly.")
-    print(f"📍 Database path set to: {db_path} (from config)")
-
-    # Ensure the target directory exists
-    db_dir.mkdir(parents=True, exist_ok=True)
-
-    # Schema file is always relative to this script's location inside the container
-    script_dir = Path(__file__).parent
-    schema_file = script_dir / "tennis_schema.sql"
-    print(f"📍 Looking for schema at: {schema_file}")
-
-    if not schema_file.exists():
-        print(f"❌ Schema file not found at: {schema_file}")
-        return None
-
-    print(f"✅ Found schema file: {schema_file}")
-
-    conn = None
     try:
-        with open(schema_file, 'r', encoding='utf-8') as f:
-            schema_sql = f.read()
-        print(f"✅ Schema file read successfully.")
+        # Ensure the target directory exists
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Directory {DB_PATH.parent} ensured.")
 
-        conn = sqlite3.connect(db_path)
-        # Check if tables already exist to avoid errors on redeploy
+        # Connect to the database (it will be created if it doesn't exist)
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
+
+        # Check if the schema is already in place by looking for a key table
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='players';")
         if cursor.fetchone():
-            print("✅ Database tables already exist. Setup is already complete.")
-            return str(db_path)
+            print("Database schema already exists. Setup is complete.")
+            conn.close()
+            sys.exit(0)  # Exit successfully
 
-        # If tables don't exist, create them
-        print("Database tables not found. Creating them now...")
+        print("Schema not found. Creating from tennis_schema.sql...")
+
+        # Find and execute the schema file
+        script_dir = Path(__file__).parent
+        schema_file = script_dir / "tennis_schema.sql"
+
+        if not schema_file.exists():
+            print(f"CRITICAL: Schema file not found at {schema_file}")
+            conn.close()
+            sys.exit(1)  # Exit with failure
+
+        with open(schema_file, 'r', encoding='utf-8') as f:
+            schema_sql = f.read()
+
+        # Execute the entire schema script
         cursor.executescript(schema_sql)
         conn.commit()
+        conn.close()
 
-        # Verify tables were created
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = cursor.fetchall()
-
-        print(f"✅ Tennis database created successfully!")
-        print(f"📍 Database location: {db_path}")
-        print(f"📊 Tables created: {len(tables)}")
-        for table in tables:
-            print(f"   - {table[0]}")
-
-        return str(db_path)
+        print("✅ Database and schema created successfully.")
+        sys.exit(0)  # Exit successfully
 
     except Exception as e:
-        print(f"❌ Error creating or verifying database: {e}")
-        return None
-    finally:
-        if conn:
-            conn.close()
+        print(f"❌ CRITICAL DATABASE SETUP FAILED: {e}")
+        # This will cause the Railway deployment to fail, showing this error in the deploy log.
+        sys.exit(1)  # Exit with failure
 
 
 if __name__ == "__main__":
-    print("🎾 Tennis Intelligence Database Setup")
-    print("=" * 50)
-    db_path = create_tennis_database()
-    if db_path:
-        print("\n🎉 Setup complete! Database is ready.")
-    else:
-        print("\n❌ Setup failed. Please check the errors above.")
+    main()

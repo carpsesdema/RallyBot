@@ -14,51 +14,29 @@ logger = logging.getLogger(__name__)
 class DatabaseManager:
     """
     Handles database connections and data processing.
-    This version is fully compatible with the complete, complex tennis_schema.sql.
+    This version assumes the database and schema have ALREADY been created by a setup script.
     """
 
     def __init__(self, db_path: Optional[str] = None):
         """
-        Initializes the DatabaseManager, connecting to the DB and ensuring schema exists.
+        Initializes the DatabaseManager, connecting to the DB.
+        It NO LONGER handles schema creation.
         """
         self.db_path = db_path or tennis_config.database.database_path
         self.conn = None
         try:
-            db_dir = os.path.dirname(self.db_path)
-            os.makedirs(db_dir, exist_ok=True)
+            # The setup script in the Procfile is responsible for creating the directory and file.
+            # This code now assumes it exists.
+            if not Path(self.db_path).exists():
+                 # This is a fallback for local testing, in production the Procfile handles it.
+                 logger.warning(f"Database file not found at {self.db_path}. A new empty one will be created, but it will lack a schema.")
+
             self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
             self.conn.execute("PRAGMA foreign_keys = ON;")
-            self._ensure_schema()
             logger.info(f"Database connection established to {self.db_path}")
         except sqlite3.Error as e:
             logger.error(f"Database connection failed: {e}", exc_info=True)
-            raise
-
-    def _ensure_schema(self):
-        """Checks if the 'players' table exists, and if not, runs the entire schema setup."""
-        if not self.conn:
-            logger.error("Cannot ensure schema, no database connection.")
-            return
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='players';")
-        if cursor.fetchone():
-            logger.info("Database schema already exists. Skipping creation.")
-            return
-        logger.warning("Database tables not found. Initializing schema now...")
-        try:
-            schema_path = Path(__file__).parent / "tennis_schema.sql"
-            if not schema_path.exists():
-                logger.critical(f"CRITICAL: Schema file not found at {schema_path}. Cannot create tables.")
-                raise FileNotFoundError(f"Schema file not found at {schema_path}")
-            with open(schema_path, 'r', encoding='utf-8') as f:
-                schema_sql = f.read()
-            cursor.executescript(schema_sql)
-            self.conn.commit()
-            logger.info("✅ Successfully created database schema from tennis_schema.sql.")
-        except Exception as e:
-            logger.critical(f"❌ CRITICAL: Failed to create database schema: {e}", exc_info=True)
-            self.conn.rollback()
             raise
 
     def _upsert_player(self, cursor: sqlite3.Cursor, player_data: Dict[str, Any]) -> Optional[int]:
@@ -66,7 +44,6 @@ class DatabaseManager:
         if not player_data or not player_data.get("id") or not player_data.get("name"):
             return None
 
-        # Extract all possible fields from the payload, providing None as default
         player_info = {
             "api_player_id": player_data.get("id"),
             "name": player_data.get("name"),
@@ -79,12 +56,10 @@ class DatabaseManager:
             "height_cm": player_data.get("height"),
             "weight_kg": player_data.get("weight"),
             "plays": player_data.get("plays"),
-            "backhand": None, # Assuming not available in this payload
+            "backhand": None,
             "updated_at": datetime.now().isoformat()
         }
 
-        # Build the INSERT and UPDATE statements dynamically to handle missing optional fields
-        # For simplicity, we will insert NULL for missing fields which is the default for most DBs
         cursor.execute("""
             INSERT INTO players (api_player_id, name, short_name, gender, country_code, country_name, date_of_birth, turned_pro, height_cm, weight_kg, plays, backhand, updated_at)
             VALUES (:api_player_id, :name, :short_name, :gender, :country_code, :country_name, :date_of_birth, :turned_pro, :height_cm, :weight_kg, :plays, :backhand, :updated_at)
@@ -120,7 +95,6 @@ class DatabaseManager:
             "created_at": datetime.now().isoformat()
         }
 
-        # Explicitly list columns to avoid mismatch errors. Only insert what we have.
         cursor.execute("""
             INSERT INTO matches (api_match_id, player1_id, player2_id, winner_id, tournament_name, round_name, match_date, score_summary, surface, tournament_level, created_at)
             VALUES (:api_match_id, :player1_id, :player2_id, :winner_id, :tournament_name, :round_name, :match_date, :score_summary, :surface, :tournament_level, :created_at)
@@ -132,22 +106,16 @@ class DatabaseManager:
     def _update_head_to_head(self, cursor: sqlite3.Cursor, winner_id: int, loser_id: int, match_data: Dict[str, Any]):
         """Updates H2H stats, compatible with the full schema and with corrected win logic."""
         player1_id, player2_id = min(winner_id, loser_id), max(winner_id, loser_id)
-
-        # Determine win increments for both INSERT (initial record) and UPDATE (existing record)
         p1_wins_inc = 1 if winner_id == player1_id else 0
         p2_wins_inc = 1 if winner_id == player2_id else 0
-
-        # Extract surface for surface-specific H2H stats
         surface = match_data.get('tournament', {}).get('groundType', 'unknown').lower()
         clay_inc = 1 if surface == 'clay' else 0
         grass_inc = 1 if surface == 'grass' else 0
         hard_inc = 1 if surface == 'hard' else 0
-
         p1_clay_wins_inc = 1 if p1_wins_inc and clay_inc else 0
         p1_grass_wins_inc = 1 if p1_wins_inc and grass_inc else 0
         p1_hard_wins_inc = 1 if p1_wins_inc and hard_inc else 0
 
-        # This statement is now fully compatible with your schema.
         cursor.execute(f"""
             INSERT INTO head_to_head (
                 player1_id, player2_id, total_matches, player1_wins, player2_wins,
@@ -196,19 +164,14 @@ class DatabaseManager:
         try:
             home_player_id = self._upsert_player(cursor, home_player_data)
             away_player_id = self._upsert_player(cursor, away_player_data)
-
             if not home_player_id or not away_player_id:
                 raise sqlite3.Error("Failed to upsert one or both players.")
-
             winner_id = home_player_id if winner_code == 1 else away_player_id
             loser_id = away_player_id if winner_code == 1 else home_player_id
-
             self._insert_match(cursor, match_data, home_player_id, away_player_id, winner_id)
             self._update_head_to_head(cursor, winner_id, loser_id, match_data)
-
             self.conn.commit()
             logger.info(f"✅ DB SUCCESS: Processed and saved match data for ID {match_data.get('id')}.")
-
         except sqlite3.Error as e:
             logger.error(f"DB ERROR processing match ID {match_data.get('id')}: {e}", exc_info=True)
             self.conn.rollback()
