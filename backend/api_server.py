@@ -1,5 +1,5 @@
 # backend/api_server.py
-# FINAL ARCHITECTURE v3: Using asyncio.to_thread for true non-blocking DB writes.
+# FINAL HARDENED VERSION - Starts the background monitor correctly.
 
 import logging
 import asyncio
@@ -15,9 +15,9 @@ from config import settings
 from utils import setup_logger, AvaChatError
 from backend.api_handlers import router as api_handlers_router
 from database.db_manager import DatabaseManager
+from backend.background_tasks import monitor_live_matches # Import the monitor
 
 logger = setup_logger("TennisServer", settings.LOG_LEVEL)
-
 
 # --- Dedicated Database Writer Task (Producer-Consumer Pattern) ---
 async def database_writer_task(queue: asyncio.Queue):
@@ -36,12 +36,8 @@ async def database_writer_task(queue: asyncio.Queue):
                 logger.info("Shutdown signal received. Database writer task is closing.")
                 break
 
-            # --- THIS IS THE FINAL, CRITICAL FIX ---
-            # We run the blocking database operation in a separate thread,
-            # which prevents it from freezing the main asyncio event loop.
-            # This is the definitive solution to the timeout problem.
+            # Use asyncio.to_thread to run the blocking DB code without freezing the server.
             await asyncio.to_thread(db_manager.process_match_data, match_data)
-
             queue.task_done()
 
         except Exception as e:
@@ -63,24 +59,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.db_writer_task = asyncio.create_task(database_writer_task(db_write_queue))
     logger.info("Dedicated database writer task has been started.")
 
-    app.state.rag_pipeline = None  # Placeholder
+    # --- THIS IS THE FIX ---
+    # Start the background monitor task and pass it the application state
+    # so it can access the shared queue.
+    app.state.monitor_task = asyncio.create_task(monitor_live_matches(app.state))
+    logger.info("Background match monitor task has been started.")
 
-    logger.info("Tennis Server Lifespan: Startup complete. Application is ready.")
-    yield
+    yield  # The application runs here
+
+    # --- Shutdown Sequence ---
     logger.info("Tennis Server Lifespan: Shutdown sequence initiated.")
 
+    # Signal the monitor task to shut down (optional, but good practice)
+    if hasattr(app.state, 'monitor_task') and app.state.monitor_task:
+        app.state.monitor_task.cancel()
+
+    # Signal the writer task to shut down
     if hasattr(app.state, 'db_write_queue') and app.state.db_write_queue:
-        logger.info("Sending shutdown signal to database writer task...")
         await app.state.db_write_queue.put(None)
 
+    # Wait for the writer task to finish
     if hasattr(app.state, 'db_writer_task') and app.state.db_writer_task:
-        try:
-            await asyncio.wait_for(app.state.db_writer_task, timeout=10.0)
-            logger.info("Database writer task has been successfully shut down.")
-        except asyncio.TimeoutError:
-            logger.error("Database writer task did not shut down gracefully within the timeout.")
-        except Exception as e:
-            logger.error(f"Error during database writer task shutdown: {e}", exc_info=True)
+        await app.state.db_writer_task
 
     logger.info("Tennis Server Lifespan: Shutdown complete.")
 
@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     title="Tennis Intelligence Backend API",
     description="API server for Tennis Intelligence, handling RAG operations and LLM interactions with professional tennis data.",
-    version="3.0.0",  # Final version
+    version="FINAL",
     lifespan=lifespan
 )
 
