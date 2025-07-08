@@ -1,65 +1,57 @@
-import sqlite3
+import os
 import sys
 from pathlib import Path
-
-# This script is now the single source of truth for creating the database.
-# It's run by the Procfile BEFORE the server starts.
-
-# This path MUST match the one used in config.py
-# We are hardcoding it here to have zero dependencies.
-DB_PATH = Path("/data/tennis_intelligence.db")
-
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 
 def main():
     """
-    Creates the database and schema from tennis_schema.sql.
-    Exits with code 1 on failure, 0 on success.
+    Connects to the PostgreSQL database and creates the schema.
+    This is run by the start command BEFORE the server starts.
     """
-    print("--- Running Production Database Setup ---")
+    print("--- Running Production Database Setup (PostgreSQL) ---")
+
+    # Railway provides the DATABASE_URL environment variable automatically
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        print("CRITICAL: DATABASE_URL environment variable not found.")
+        sys.exit(1)
+
+    # SQLAlchemy uses 'postgresql' as the dialect name
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
 
     try:
-        # Ensure the target directory exists
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        print(f"Directory {DB_PATH.parent} ensured.")
+        # Create an engine to connect to the database
+        engine = create_engine(db_url)
+        with engine.connect() as connection:
+            print("✅ Database connection successful.")
 
-        # Connect to the database (it will be created if it doesn't exist)
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+            # Find and execute the schema file
+            script_dir = Path(__file__).parent
+            schema_file = script_dir / "tennis_schema.sql"
 
-        # Check if the schema is already in place by looking for a key table
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='players';")
-        if cursor.fetchone():
-            print("Database schema already exists. Setup is complete.")
-            conn.close()
-            sys.exit(0)  # Exit successfully
+            if not schema_file.exists():
+                print(f"CRITICAL: Schema file not found at {schema_file}")
+                sys.exit(1)
 
-        print("Schema not found. Creating from tennis_schema.sql...")
+            with open(schema_file, 'r', encoding='utf-8') as f:
+                schema_sql = f.read()
 
-        # Find and execute the schema file
-        script_dir = Path(__file__).parent
-        schema_file = script_dir / "tennis_schema.sql"
+            # Execute the entire schema script
+            connection.execute(text(schema_sql))
+            connection.commit()
+            print("✅ Schema setup complete or already exists.")
 
-        if not schema_file.exists():
-            print(f"CRITICAL: Schema file not found at {schema_file}")
-            conn.close()
-            sys.exit(1)  # Exit with failure
-
-        with open(schema_file, 'r', encoding='utf-8') as f:
-            schema_sql = f.read()
-
-        # Execute the entire schema script
-        cursor.executescript(schema_sql)
-        conn.commit()
-        conn.close()
-
-        print("✅ Database and schema created successfully.")
-        sys.exit(0)  # Exit successfully
-
+    except OperationalError as e:
+        print(f"❌ CRITICAL: Could not connect to the database: {e}")
+        sys.exit(1)
     except Exception as e:
         print(f"❌ CRITICAL DATABASE SETUP FAILED: {e}")
-        # This will cause the Railway deployment to fail, showing this error in the deploy log.
-        sys.exit(1)  # Exit with failure
+        sys.exit(1)
 
+    print("--- Database setup finished successfully. ---")
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()

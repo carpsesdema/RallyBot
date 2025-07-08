@@ -1,4 +1,4 @@
-# requirements.txt - Production Ready
+# requirements.txt - Production Ready (Postgres)
 
 # Core Frameworks
 fastapi
@@ -15,9 +15,10 @@ faiss-cpu
 numpy
 packaging
 
-# Database (SQLAlchemy/Alembic for future migrations)
+# --- DATABASE (Postgres) ---
 sqlalchemy
 alembic
+psycopg2-binary
 
 # Configuration & Environment
 python-dotenv
