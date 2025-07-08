@@ -1,5 +1,5 @@
 # backend/background_tasks.py
-# MODIFIED: Now fetches all of today's events instead of just 'live' ones.
+# MODIFIED: Now uses a single DB manager instance per run, more efficient.
 
 import asyncio
 import logging
@@ -18,16 +18,17 @@ async def monitor_live_matches(rag_pipeline=None, tennis_config=None):
     This is now smarter: it fetches all of today's events, which includes
     scheduled, live, and recently finished matches. This increases the likelihood
     of finding completed matches with a winnerCode to save to the database.
+    It now also uses a single DB connection per cycle for efficiency.
     """
     logger.info("✅ Starting the background Tennis Match Monitor.")
+    db_manager = DatabaseManager()  # Create one instance to reuse
+
     while True:
         logger.info("BACKGROUND_TASK: Waking up to check for new match data...")
         client = None
-        db_manager = None
 
         try:
             client = ProfessionalTennisAPIClient()
-            db_manager = DatabaseManager()
 
             # <<< THE FIX IS HERE! >>>
             # Instead of just 'live' events, we get all events for today.
@@ -57,8 +58,8 @@ async def monitor_live_matches(rag_pipeline=None, tennis_config=None):
         finally:
             if client:
                 await client.close()
-            if db_manager:
-                db_manager.close()
+            # We don't close the db_manager here anymore, we let it persist.
+            # It will be closed gracefully when the server shuts down.
 
             # Sleep for 15 minutes, as we are now checking a whole day's worth of events.
             sleep_duration_seconds = 900

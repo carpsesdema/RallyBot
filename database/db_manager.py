@@ -14,28 +14,22 @@ logger = logging.getLogger(__name__)
 class DatabaseManager:
     """
     Handles database connections and data processing.
-    Now includes logic to initialize the schema if the database is new.
+    This version is fully compatible with the complete, complex tennis_schema.sql.
     """
 
     def __init__(self, db_path: Optional[str] = None):
         """
         Initializes the DatabaseManager, connecting to the DB and ensuring schema exists.
-        It will use the path from the global config unless one is explicitly provided.
         """
-        # Use path from config for centralized management.
         self.db_path = db_path or tennis_config.database.database_path
         self.conn = None
         try:
-            # Ensure the persistent directory exists on Railway
             db_dir = os.path.dirname(self.db_path)
             os.makedirs(db_dir, exist_ok=True)
-
             self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
             self.conn.execute("PRAGMA foreign_keys = ON;")
-
-            self._ensure_schema()  # Call the schema check on initialization
-
+            self._ensure_schema()
             logger.info(f"Database connection established to {self.db_path}")
         except sqlite3.Error as e:
             logger.error(f"Database connection failed: {e}", exc_info=True)
@@ -46,110 +40,154 @@ class DatabaseManager:
         if not self.conn:
             logger.error("Cannot ensure schema, no database connection.")
             return
-
         cursor = self.conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='players';")
         if cursor.fetchone():
             logger.info("Database schema already exists. Skipping creation.")
             return
-
         logger.warning("Database tables not found. Initializing schema now...")
         try:
-            # Schema file is located relative to this file's project structure.
-            # IMPORTANT: This assumes a 'tennis_schema.sql' file exists in the same 'database' directory.
             schema_path = Path(__file__).parent / "tennis_schema.sql"
             if not schema_path.exists():
                 logger.critical(f"CRITICAL: Schema file not found at {schema_path}. Cannot create tables.")
                 raise FileNotFoundError(f"Schema file not found at {schema_path}")
-
             with open(schema_path, 'r', encoding='utf-8') as f:
                 schema_sql = f.read()
-
             cursor.executescript(schema_sql)
             self.conn.commit()
-            logger.info("✅ Successfully created database schema.")
+            logger.info("✅ Successfully created database schema from tennis_schema.sql.")
         except Exception as e:
             logger.critical(f"❌ CRITICAL: Failed to create database schema: {e}", exc_info=True)
             self.conn.rollback()
             raise
 
     def _upsert_player(self, cursor: sqlite3.Cursor, player_data: Dict[str, Any]) -> Optional[int]:
-        """Inserts or updates a player's details."""
-        api_player_id = player_data.get("id")
-        player_name = player_data.get("name")
-        country_code = player_data.get("country", {}).get("alpha2")
-
-        if not api_player_id or not player_name:
+        """Inserts or updates a player's details, compatible with the full schema."""
+        if not player_data or not player_data.get("id") or not player_data.get("name"):
             return None
 
+        # Extract all possible fields from the payload, providing None as default
+        player_info = {
+            "api_player_id": player_data.get("id"),
+            "name": player_data.get("name"),
+            "short_name": player_data.get("shortName"),
+            "gender": player_data.get("gender"),
+            "country_code": player_data.get("country", {}).get("alpha2"),
+            "country_name": player_data.get("country", {}).get("name"),
+            "date_of_birth": datetime.fromtimestamp(player_data["dateOfBirthTimestamp"]).date().isoformat() if player_data.get("dateOfBirthTimestamp") else None,
+            "turned_pro": player_data.get("turnedPro"),
+            "height_cm": player_data.get("height"),
+            "weight_kg": player_data.get("weight"),
+            "plays": player_data.get("plays"),
+            "backhand": None, # Assuming not available in this payload
+            "updated_at": datetime.now().isoformat()
+        }
+
+        # Build the INSERT and UPDATE statements dynamically to handle missing optional fields
+        # For simplicity, we will insert NULL for missing fields which is the default for most DBs
         cursor.execute("""
-            INSERT INTO players (api_player_id, name, country_code, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO players (api_player_id, name, short_name, gender, country_code, country_name, date_of_birth, turned_pro, height_cm, weight_kg, plays, backhand, updated_at)
+            VALUES (:api_player_id, :name, :short_name, :gender, :country_code, :country_name, :date_of_birth, :turned_pro, :height_cm, :weight_kg, :plays, :backhand, :updated_at)
             ON CONFLICT(api_player_id) DO UPDATE SET
                 name=excluded.name,
                 country_code=excluded.country_code,
                 updated_at=excluded.updated_at;
-        """, (api_player_id, player_name, country_code, datetime.now().isoformat()))
+        """, player_info)
 
-        cursor.execute("SELECT id FROM players WHERE api_player_id = ?", (api_player_id,))
+        cursor.execute("SELECT id FROM players WHERE api_player_id = ?", (player_info["api_player_id"],))
         player_row = cursor.fetchone()
         return player_row['id'] if player_row else None
 
     def _insert_match(self, cursor: sqlite3.Cursor, match_data: Dict[str, Any], player1_id: int, player2_id: int, winner_id: int):
-        """Inserts or updates a match record."""
-        api_match_id = match_data.get('id')
+        """Inserts or updates a match record, compatible with the full schema."""
         tournament = match_data.get('tournament', {})
         round_info = match_data.get('roundInfo', {})
         home_score = match_data.get('homeScore', {})
         away_score = match_data.get('awayScore', {})
         match_timestamp = match_data.get('startTimestamp')
-        match_date = datetime.fromtimestamp(match_timestamp).isoformat() if match_timestamp else datetime.now().isoformat()
-        score = f"P1: {home_score.get('display')} - P2: {away_score.get('display')}"
 
+        match_info = {
+            "api_match_id": match_data.get('id'),
+            "match_date": datetime.fromtimestamp(match_timestamp).date().isoformat() if match_timestamp else None,
+            "tournament_name": tournament.get('name'),
+            "tournament_level": tournament.get('category', {}).get('name'),
+            "round_name": round_info.get('round'),
+            "surface": tournament.get('groundType'),
+            "player1_id": player1_id,
+            "player2_id": player2_id,
+            "winner_id": winner_id,
+            "score_summary": f"{home_score.get('display', '')}-{away_score.get('display', '')}",
+            "created_at": datetime.now().isoformat()
+        }
+
+        # Explicitly list columns to avoid mismatch errors. Only insert what we have.
         cursor.execute("""
-            INSERT INTO matches (api_match_id, player1_id, player2_id, winner_id, tournament_name, round_name, match_date, score_summary, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO matches (api_match_id, player1_id, player2_id, winner_id, tournament_name, round_name, match_date, score_summary, surface, tournament_level, created_at)
+            VALUES (:api_match_id, :player1_id, :player2_id, :winner_id, :tournament_name, :round_name, :match_date, :score_summary, :surface, :tournament_level, :created_at)
             ON CONFLICT(api_match_id) DO UPDATE SET
-                player1_id=excluded.player1_id,
-                player2_id=excluded.player2_id,
                 winner_id=excluded.winner_id,
-                tournament_name=excluded.tournament_name,
-                round_name=excluded.round_name,
-                match_date=excluded.match_date,
                 score_summary=excluded.score_summary;
-        """, (api_match_id, player1_id, player2_id, winner_id, tournament.get('name'), round_info.get('round'), match_date, score, datetime.now().isoformat()))
+        """, match_info)
 
-    def _update_head_to_head(self, cursor: sqlite3.Cursor, winner_id: int, loser_id: int):
-        """Updates head-to-head statistics."""
+    def _update_head_to_head(self, cursor: sqlite3.Cursor, winner_id: int, loser_id: int, match_data: Dict[str, Any]):
+        """Updates H2H stats, compatible with the full schema and with corrected win logic."""
         player1_id, player2_id = min(winner_id, loser_id), max(winner_id, loser_id)
-        player1_wins_increment = 1 if winner_id == player1_id else 0
 
-        cursor.execute("""
-            INSERT INTO head_to_head (player1_id, player2_id, total_matches, player1_wins, last_updated, last_match_winner_id, last_match_date)
-            VALUES (?, ?, 1, ?, ?, ?, ?)
+        # Determine win increments for both INSERT (initial record) and UPDATE (existing record)
+        p1_wins_inc = 1 if winner_id == player1_id else 0
+        p2_wins_inc = 1 if winner_id == player2_id else 0
+
+        # Extract surface for surface-specific H2H stats
+        surface = match_data.get('tournament', {}).get('groundType', 'unknown').lower()
+        clay_inc = 1 if surface == 'clay' else 0
+        grass_inc = 1 if surface == 'grass' else 0
+        hard_inc = 1 if surface == 'hard' else 0
+
+        p1_clay_wins_inc = 1 if p1_wins_inc and clay_inc else 0
+        p1_grass_wins_inc = 1 if p1_wins_inc and grass_inc else 0
+        p1_hard_wins_inc = 1 if p1_wins_inc and hard_inc else 0
+
+        # This statement is now fully compatible with your schema.
+        cursor.execute(f"""
+            INSERT INTO head_to_head (
+                player1_id, player2_id, total_matches, player1_wins, player2_wins,
+                last_match_date, last_match_winner_id, last_updated,
+                clay_matches, clay_player1_wins,
+                grass_matches, grass_player1_wins,
+                hard_matches, hard_player1_wins
+            )
+            VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(player1_id, player2_id) DO UPDATE SET
                 total_matches = total_matches + 1,
-                player1_wins = player1_wins + excluded.player1_wins,
-                last_updated = excluded.last_updated,
+                player1_wins = player1_wins + {p1_wins_inc},
+                player2_wins = player2_wins + {p2_wins_inc},
+                last_match_date = excluded.last_match_date,
                 last_match_winner_id = excluded.last_match_winner_id,
-                last_match_date = excluded.last_match_date;
-        """, (player1_id, player2_id, player1_wins_increment, datetime.now().isoformat(), winner_id, datetime.now().date().isoformat()))
+                last_updated = excluded.last_updated,
+                clay_matches = clay_matches + {clay_inc},
+                clay_player1_wins = clay_player1_wins + {p1_clay_wins_inc},
+                grass_matches = grass_matches + {grass_inc},
+                grass_player1_wins = grass_player1_wins + {p1_grass_wins_inc},
+                hard_matches = hard_matches + {hard_inc},
+                hard_player1_wins = hard_player1_wins + {p1_hard_wins_inc};
+        """, (
+            player1_id, player2_id, p1_wins_inc, p2_wins_inc,
+            datetime.now().date().isoformat(), winner_id, datetime.now().isoformat(),
+            clay_inc, p1_clay_wins_inc,
+            grass_inc, p1_grass_wins_inc,
+            hard_inc, p1_hard_wins_inc
+        ))
 
     def process_match_data(self, match_data: Dict[str, Any]):
-        """
-        Processes comprehensive match data, updating players, matches, and H2H stats.
-        This is now robust enough to handle inconsistent API keys like 'homePlayer' vs 'homeTeam'.
-        """
+        """Processes comprehensive match data, updating players, matches, and H2H stats."""
         if not self.conn:
             logger.error("Cannot process match data, no database connection.")
             return
 
-        # FLEXIBLE DATA HANDLING: Check for multiple possible keys from the API.
         home_player_data = match_data.get("homePlayer") or match_data.get("homeTeam")
         away_player_data = match_data.get("awayPlayer") or match_data.get("awayTeam")
         winner_code = match_data.get("winnerCode")
 
-        # Core data validation: only skip if absolutely necessary.
         if not all([home_player_data, away_player_data, winner_code is not None]):
             logger.warning(f"Skipping match ID {match_data.get('id', 'N/A')} due to incomplete player or winner data.")
             return
@@ -166,7 +204,7 @@ class DatabaseManager:
             loser_id = away_player_id if winner_code == 1 else home_player_id
 
             self._insert_match(cursor, match_data, home_player_id, away_player_id, winner_id)
-            self._update_head_to_head(cursor, winner_id, loser_id)
+            self._update_head_to_head(cursor, winner_id, loser_id, match_data)
 
             self.conn.commit()
             logger.info(f"✅ DB SUCCESS: Processed and saved match data for ID {match_data.get('id')}.")
