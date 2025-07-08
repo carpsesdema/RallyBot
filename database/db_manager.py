@@ -5,6 +5,9 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 from pathlib import Path
 
+# Import the centralized tennis config
+from config import tennis_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -14,11 +17,13 @@ class DatabaseManager:
     Now includes logic to initialize the schema if the database is new.
     """
 
-    def __init__(self, db_path: str = "/data/tennis_intelligence.db"):
+    def __init__(self, db_path: Optional[str] = None):
         """
         Initializes the DatabaseManager, connecting to the DB and ensuring schema exists.
+        It will use the path from the global config unless one is explicitly provided.
         """
-        self.db_path = db_path
+        # Use path from config for centralized management.
+        self.db_path = db_path or tennis_config.database.database_path
         self.conn = None
         try:
             # Ensure the persistent directory exists on Railway

@@ -2,18 +2,21 @@ import sqlite3
 import os
 from pathlib import Path
 
+# Import the centralized tennis config
+from config import tennis_config
+
 
 def create_tennis_database():
     """
     Creates the tennis intelligence database directly on the Railway persistent volume.
-    This version removes environment detection to be 100% reliable.
+    This version removes environment detection to be 100% reliable and uses centralized config.
     """
-    # On Railway, the persistent volume is ALWAYS at /data. We write there directly.
-    db_dir = Path("/data")
-    db_path = db_dir / "tennis_intelligence.db"
+    # Use the path from the centralized config
+    db_path = Path(tennis_config.database.database_path)
+    db_dir = db_path.parent
 
     print("🚀 Targeting Railway persistent volume directly.")
-    print(f"📍 Database path set to: {db_path}")
+    print(f"📍 Database path set to: {db_path} (from config)")
 
     # Ensure the target directory exists
     db_dir.mkdir(parents=True, exist_ok=True)

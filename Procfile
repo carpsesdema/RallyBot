@@ -1,1 +1,1 @@
-web: gunicorn --worker-class uvicorn.workers.UvicornWorker -w 1 backend.api_server:app
+web: gunicorn -w 1 --threads 4 -k uvicorn.workers.UvicornWorker backend.api_server:app

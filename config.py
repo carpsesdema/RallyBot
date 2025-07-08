@@ -28,7 +28,8 @@ class TennisIntelligenceConfig(BaseModel):
 
 
 class DatabaseConfig(BaseModel):
-    database_url: str = Field(default="sqlite:///tennis_intelligence.db")
+    # CENTRALIZED the database path here for consistency.
+    database_path: str = Field(default=os.getenv("DATABASE_PATH", "/data/tennis_intelligence.db"))
     enable_caching: bool = Field(default=True)
 
 
@@ -51,6 +52,7 @@ def load_tennis_config() -> TennisAPIConfig:
         rapidapi_key=os.getenv("TENNIS_RAPIDAPI_KEY"),
         rapidapi_host=os.getenv("TENNIS_RAPIDAPI_HOST", "tennisapi1.p.rapidapi.com"),
     )
+    # This creates the full config object, including the DatabaseConfig with the new path
     return TennisAPIConfig(endpoints=endpoints, credentials=credentials)
 
 
